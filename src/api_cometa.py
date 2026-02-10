@@ -1,138 +1,141 @@
-import requests
-import pandas as pd
+import logging
 from datetime import datetime, timedelta
-import urllib3
-import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Optional
 
-# Desativa avisos de segurança SSL
+import requests
+import urllib3
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- CONFIGURAÇÕES DE ACESSO ---
-BASE_URL = "https://vendas.cometasupermercados.com.br"
-EMAIL = "comercial@valemilk.com.br"
-PASSWORD = "@valemilk"
 
-def obter_token():
-    url_login = f"{BASE_URL}/login"
-    payload = {"email": EMAIL, "password": PASSWORD}
-    try:
-        response = requests.post(url_login, json=payload, headers={"Content-Type": "application/json"}, verify=False, timeout=20)
-        if response.status_code == 200:
-            return response.text.strip()
-    except Exception as e:
-        print(f"Erro na autenticação: {e}")
-    return None
+class CometaClient:
+    def __init__(
+        self,
+        base_url: str,
+        email: str,
+        password: str,
+        timeout: int = 30,
+        verify_ssl: bool = False,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.email = email
+        self.password = password
+        self.timeout = timeout
+        self.verify_ssl = verify_ssl
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self._token: Optional[str] = None
 
-def processar_estoque(headers):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Extraindo estoque atual...")
-    try:
-        response = requests.get(f"{BASE_URL}/estoque", headers=headers, verify=False, timeout=60)
-        if response.status_code == 200:
-            dados = response.json()
-            df_estq = pd.DataFrame(dados)
-            # Padroniza colunas do estoque para maiúsculo
-            df_estq.columns = [c.upper() for c in df_estq.columns]
-            df_estq.to_csv("estoque_atual.csv", index=False, sep=";", encoding="utf-8-sig")
-            
-            # O campo de loja no estoque geralmente é 'loja' ou 'LOJA'
-            col_loja = 'LOJA' if 'LOJA' in df_estq.columns else df_estq.columns[0]
-            lojas = sorted(df_estq[col_loja].unique().tolist())
-            print(f"✅ Arquivo 'estoque_atual.csv' gerado ({len(lojas)} lojas).")
-            return lojas
-    except Exception as e:
-        print(f"❌ Falha ao processar estoque: {e}")
-    return []
-
-def buscar_vendas_por_loja(loja_id, headers, data_inicio, data_fim):
-    url_venda = f"{BASE_URL}/venda"
-    linhas_planificadas = []
-    data_atual = data_inicio
-    
-    while data_atual <= data_fim:
-        intervalo_fim = data_atual + timedelta(days=2)
-        if intervalo_fim > data_fim: intervalo_fim = data_fim
-        
-        params = {
-            "loja": int(loja_id),
-            "dataInicial": data_atual.strftime("%d-%m-%Y"),
-            "dataFinal": intervalo_fim.strftime("%d-%m-%Y")
-        }
-        
+    def _obter_token(self) -> Optional[str]:
+        url_login = f"{self.base_url}/login"
+        payload = {"email": self.email, "password": self.password}
         try:
-            res = requests.get(url_venda, headers=headers, params=params, verify=False, timeout=30)
-            if res.status_code == 200:
-                dados = res.json()
-                
-                # Extração segura de dados da loja e lista de vendas
-                info_loja = dados.get("LOJA", {}) if isinstance(dados, dict) else {}
-                lista_vendas = dados.get("VENDAS", []) if isinstance(dados, dict) else (dados if isinstance(dados, list) else [])
-                
-                for venda in lista_vendas:
-                    # Cria a linha base com dados da loja
-                    linha = {
-                        "ID_LOJA": info_loja.get("LOJA", loja_id),
-                        "NOME_LOJA": info_loja.get("NOME", ""),
-                        "CNPJ_LOJA": info_loja.get("CNPJ", "")
-                    }
-                    # Adiciona os dados da venda (Garante que as chaves fiquem em maiúsculo depois)
-                    linha.update(venda)
-                    linhas_planificadas.append(linha)
-        except:
-            pass
-        
-        data_atual = intervalo_fim + timedelta(days=1)
-    
-    return linhas_planificadas
+            response = requests.post(
+                url_login,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                verify=self.verify_ssl,
+                timeout=self.timeout,
+            )
+            if response.status_code == 200:
+                return response.text.strip()
+            self.logger.error("Login failed: %s", response.status_code)
+        except Exception:
+            self.logger.exception("Login request failed")
+        return None
 
-def executar_automacao():
-    token = obter_token()
-    if not token: 
-        print("Erro: Token não obtido.")
-        return
+    def _get_headers(self) -> Optional[dict]:
+        if not self._token:
+            self._token = self._obter_token()
+        if not self._token:
+            return None
+        return {"Authorization": f"Bearer {self._token}", "Accept": "application/json"}
 
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    lojas = processar_estoque(headers)
-    
-    if not lojas: return
+    def get_estoque(self) -> List[dict]:
+        headers = self._get_headers()
+        if not headers:
+            return []
 
-    hoje = datetime.now()
-    inicio_mes = hoje.replace(day=1)
-    todas_vendas = []
+        try:
+            response = requests.get(
+                f"{self.base_url}/estoque",
+                headers=headers,
+                verify=self.verify_ssl,
+                timeout=self.timeout,
+            )
+            if response.status_code == 200:
+                dados = response.json()
+                if isinstance(dados, list):
+                    return dados
+                if isinstance(dados, dict) and "ESTOQUE" in dados:
+                    return dados["ESTOQUE"]
+            self.logger.error("Estoque request failed: %s", response.status_code)
+        except Exception:
+            self.logger.exception("Estoque request failed")
+        return []
 
-    print(f"\nIniciando extração de vendas (Paralelo)...")
+    def list_lojas(self) -> List[int]:
+        estoque = self.get_estoque()
+        lojas = set()
+        for item in estoque:
+            for key in ("LOJA", "loja", "ID_LOJA", "id_loja"):
+                if key in item and item[key] is not None:
+                    try:
+                        lojas.add(int(item[key]))
+                    except (TypeError, ValueError):
+                        continue
+        return sorted(lojas)
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futuros = {executor.submit(buscar_vendas_por_loja, l, headers, inicio_mes, hoje): l for l in lojas}
-        for f in as_completed(futuros):
-            res_loja = f.result()
-            todas_vendas.extend(res_loja)
-            print(f"   Loja {futuros[f]:02d}: {len(res_loja)} registros.")
+    def get_vendas_loja(self, loja_id: int, data_inicio: datetime, data_fim: datetime) -> List[dict]:
+        headers = self._get_headers()
+        if not headers:
+            return []
 
-    if todas_vendas:
-        df_vendas = pd.DataFrame(todas_vendas)
-        
-        # 1. Padroniza todos os nomes de colunas para MAIÚSCULO
-        df_vendas.columns = [c.upper() for c in df_vendas.columns]
-        
-        # 2. Define a ordem de preferência (apenas colunas que existem)
-        ordem_pref = ['ID_LOJA', 'NOME_LOJA', 'CNPJ_LOJA', 'DATA', 'PRODUTO', 'QTD', 'VENDA', 'CUSTO', 'EAN', 'COD_INTERNO']
-        
-        # Filtra apenas as que realmente existem no DataFrame para evitar KeyError
-        cols_final = [c for c in ordem_pref if c in df_vendas.columns]
-        
-        # Adiciona quaisquer outras colunas extras que sobraram
-        extras = [c for c in df_vendas.columns if c not in cols_final]
-        
-        # Aplica a reorganização segura
-        df_vendas = df_vendas[cols_final + extras]
-        
-        # Salva o arquivo final
-        df_vendas.to_csv("vendas_mes_atual.csv", index=False, sep=";", encoding="utf-8-sig")
-        print(f"\n🚀 PROCESSO CONCLUÍDO!")
-        print(f"📍 Vendas salvas: 'vendas_mes_atual.csv' ({len(df_vendas)} linhas)")
-    else:
-        print("\n⚠️ Nenhuma venda encontrada.")
+        url_venda = f"{self.base_url}/venda"
+        linhas: List[dict] = []
+        data_atual = data_inicio
 
-if __name__ == "__main__":
-    executar_automacao()
+        while data_atual <= data_fim:
+            intervalo_fim = data_atual + timedelta(days=2)
+            if intervalo_fim > data_fim:
+                intervalo_fim = data_fim
+
+            params = {
+                "loja": int(loja_id),
+                "dataInicial": data_atual.strftime("%d-%m-%Y"),
+                "dataFinal": intervalo_fim.strftime("%d-%m-%Y"),
+            }
+
+            try:
+                res = requests.get(
+                    url_venda,
+                    headers=headers,
+                    params=params,
+                    verify=self.verify_ssl,
+                    timeout=self.timeout,
+                )
+                if res.status_code == 200:
+                    dados = res.json()
+
+                    info_loja = dados.get("LOJA", {}) if isinstance(dados, dict) else {}
+                    lista_vendas = (
+                        dados.get("VENDAS", [])
+                        if isinstance(dados, dict)
+                        else (dados if isinstance(dados, list) else [])
+                    )
+
+                    for venda in lista_vendas:
+                        linha = {
+                            "ID_LOJA": info_loja.get("LOJA", loja_id),
+                            "NOME_LOJA": info_loja.get("NOME", ""),
+                            "CNPJ_LOJA": info_loja.get("CNPJ", ""),
+                        }
+                        linha.update(venda)
+                        linhas.append(linha)
+                else:
+                    self.logger.error("Vendas request failed for loja %s: %s", loja_id, res.status_code)
+            except Exception:
+                self.logger.exception("Vendas request failed for loja %s", loja_id)
+
+            data_atual = intervalo_fim + timedelta(days=1)
+
+        return linhas
