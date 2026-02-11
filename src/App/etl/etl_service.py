@@ -1,6 +1,6 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List
 
 from api_cometa import CometaClient
@@ -90,3 +90,80 @@ class ETLService:
         """Executa ambos ETLs em sequência."""
         self.processar_estoque()
         self.processar_vendas()
+
+    def bootstrap_vendas(self, data_inicio: datetime = None, data_fim: datetime = None) -> None:
+        """
+        Bootstrap de vendas: puxe histórico completo de 3 em 3 dias.
+        
+        Respeita limite de 3 dias da API Cometa.
+        
+        Args:
+            data_inicio: Data inicial (default: 01/01/2025)
+            data_fim: Data final (default: hoje)
+        """
+        if data_inicio is None:
+            data_inicio = datetime(2025, 1, 1)
+        if data_fim is None:
+            data_fim = datetime.now()
+            
+        self.logger.info(f"🔄 Bootstrap vendas from {data_inicio.date()} to {data_fim.date()}")
+        self.logger.info("⚠️  Puxando dados de 3 em 3 dias (limite da API)")
+        
+        lojas = self.cometa_client.list_lojas()
+        if not lojas:
+            self.logger.warning("No lojas found for vendas bootstrap")
+            return
+            
+        todas_vendas: List[dict] = []
+        total_requisicoes = 0
+        
+        # Loop de 3 em 3 dias
+        data_atual = data_inicio
+        while data_atual <= data_fim:
+            # Próx 3 dias (window máximo da API: dia D + 2 = 3 dias total)
+            # data_fim calculado como data_atual + 2 dias (inclusive)
+            data_chunk_fim = min(data_atual + timedelta(days=2), data_fim)
+            
+            self.logger.info(f"📅 Fetching {data_atual.date()} → {data_chunk_fim.date()}")
+            
+            lojas_sucesso = 0
+            lojas_falha = 0
+            vendas_periodo = 0
+            
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futuros = {
+                    executor.submit(self.cometa_client.get_vendas_loja, loja, data_atual, data_chunk_fim): loja
+                    for loja in lojas
+                }
+                for future in as_completed(futuros):
+                    loja_id = futuros[future]
+                    try:
+                        vendas_loja = future.result()
+                        todas_vendas.extend(vendas_loja)
+                        vendas_periodo += len(vendas_loja)
+                        lojas_sucesso += 1
+                    except Exception as e:
+                        lojas_falha += 1
+                        self.logger.warning(f"Failed to fetch vendas for loja {loja_id}: {e}")
+            
+            total_requisicoes += 1
+            self.logger.info(
+                f"✅ Period {data_atual.date()} → {data_chunk_fim.date()}: "
+                f"{vendas_periodo} vendas (lojas: {lojas_sucesso} ok, {lojas_falha} falha)"
+            )
+            
+            # Próximo dia é o dia seguinte ao fim do chunk atual
+            data_atual = data_chunk_fim + timedelta(days=1)
+        
+        self.logger.info(f"✅ Bootstrap completed: {total_requisicoes} day-windows, {len(todas_vendas)} total vendas")
+        
+        if not todas_vendas:
+            self.logger.warning("No vendas fetched during bootstrap")
+            return
+        
+        # Upsert todos os dados
+        deleted, inserted = self.db_client.upsert_vendas(todas_vendas)
+        self.logger.info(
+            "Vendas bootstrap finished. Deleted=%d Inserted=%d Total_rows=%d",
+            deleted, inserted, len(todas_vendas)
+        )

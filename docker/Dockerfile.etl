@@ -14,6 +14,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY src/ /app/
 
+# Copy entrypoint script
+COPY docker/entrypoint-etl.sh /app/entrypoint-etl.sh
+RUN chmod +x /app/entrypoint-etl.sh
+
 # Create non-root user
 RUN useradd -m -u 1001 etluser && \
     chown -R etluser:etluser /app
@@ -21,5 +25,5 @@ RUN useradd -m -u 1001 etluser && \
 # Switch to non-root user
 USER etluser
 
-# ETL worker entry point
-CMD ["python", "etl_worker.py"]
+# ETL worker entry point with bootstrap
+ENTRYPOINT ["/app/entrypoint-etl.sh"]
