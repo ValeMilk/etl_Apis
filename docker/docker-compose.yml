@@ -1,29 +1,69 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:15
+    container_name: bi_cometa_db
     environment:
       POSTGRES_DB: bi_cometa
       POSTGRES_USER: bi_user
       POSTGRES_PASSWORD: bi_password
-    ports:
-      - "5432:5432"
+    # PostgreSQL isolado - sem exposição externa
+    # Acesso apenas via rede interna bi_network
+    networks:
+      - bi_network
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bi_user -d bi_cometa"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   app:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    container_name: bi_cometa_api
     env_file:
       - ../.env
     environment:
       DB_URL: postgresql+psycopg2://bi_user:bi_password@db:5432/bi_cometa
     ports:
-      - "8000:8000"
+      - "8000:8000"   # Apenas app exposto publicamente
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    networks:
+      - bi_network
+    restart: unless-stopped
+
+  etl:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.etl
+    container_name: bi_cometa_etl
+    env_file:
+      - ../.env
+    environment:
+      DB_URL: postgresql+psycopg2://bi_user:bi_password@db:5432/bi_cometa
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - bi_network
+    restart: unless-stopped
+    # Limites de recursos para observabilidade
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+networks:
+  bi_network:
+    driver: bridge
 
 volumes:
   postgres_data:

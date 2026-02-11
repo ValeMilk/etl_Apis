@@ -5,10 +5,17 @@ from typing import List, Optional
 import requests
 import urllib3
 
+from App.shared.utils import flatten_vendas, flatten_estoque
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class CometaClient:
+    """
+    Cliente para consumir dados da API Cometa.
+    Realiza autenticação, extração de estoque e vendas.
+    """
+
     def __init__(
         self,
         base_url: str,
@@ -26,6 +33,7 @@ class CometaClient:
         self._token: Optional[str] = None
 
     def _obter_token(self) -> Optional[str]:
+        """Autentica na API e retorna o token."""
         url_login = f"{self.base_url}/login"
         payload = {"email": self.email, "password": self.password}
         try:
@@ -44,6 +52,7 @@ class CometaClient:
         return None
 
     def _get_headers(self) -> Optional[dict]:
+        """Retorna headers com autenticação, fazendo login se necessário."""
         if not self._token:
             self._token = self._obter_token()
         if not self._token:
@@ -51,6 +60,15 @@ class CometaClient:
         return {"Authorization": f"Bearer {self._token}", "Accept": "application/json"}
 
     def get_estoque(self) -> List[dict]:
+        """
+        Retorna estoque atual DESPLANIFICADO.
+        Cada linha é um produto em uma loja.
+        
+        Sanitização:
+        - Valida resposta da API
+        - Extrai estrutura de estoque (se aninhada em dict)
+        - Retorna lista vazia se erro ou formato inválido
+        """
         headers = self._get_headers()
         if not headers:
             return []
@@ -64,16 +82,47 @@ class CometaClient:
             )
             if response.status_code == 200:
                 dados = response.json()
+                
+                # Sanitização: validação básica de resposta
+                if dados is None:
+                    self.logger.warning("Estoque response is None, returning empty list")
+                    return []
+                
+                # Extração de estrutura (se aninhada)
+                estoque_list: List[dict] = []
                 if isinstance(dados, list):
-                    return dados
-                if isinstance(dados, dict) and "ESTOQUE" in dados:
-                    return dados["ESTOQUE"]
-            self.logger.error("Estoque request failed: %s", response.status_code)
+                    estoque_list = dados
+                elif isinstance(dados, dict):
+                    # Tenta chaves comuns
+                    for key in ("ESTOQUE", "estoque", "data", "DATA", "items", "ITEMS"):
+                        if key in dados and isinstance(dados[key], list):
+                            estoque_list = dados[key]
+                            break
+                    
+                    if not estoque_list:
+                        self.logger.warning(
+                            "Estoque response is dict without expected list key. Keys: %s",
+                            list(dados.keys())[:10]
+                        )
+                        return []
+                else:
+                    self.logger.warning(
+                        "Estoque response has unexpected type: %s. Expected list or dict",
+                        type(dados).__name__
+                    )
+                    return []
+                
+                # Desplanicar/padronizar dados
+                return flatten_estoque(estoque_list)
+            
+            self.logger.error("Estoque request failed: status_code=%s", response.status_code)
         except Exception:
             self.logger.exception("Estoque request failed")
+        
         return []
 
     def list_lojas(self) -> List[int]:
+        """Retorna lista de IDs de lojas a partir do estoque."""
         estoque = self.get_estoque()
         lojas = set()
         for item in estoque:
@@ -86,12 +135,21 @@ class CometaClient:
         return sorted(lojas)
 
     def get_vendas_loja(self, loja_id: int, data_inicio: datetime, data_fim: datetime) -> List[dict]:
+        """
+        Retorna vendas da loja DESPLANIFICADAS.
+        Cada linha é uma venda individual (produto + quantidade + valor).
+        
+        Sanitização:
+        - Valida resposta da API antes de processar
+        - Retorna lista vazia se erro ou formato inválido
+        - Permite que parcial de dados seja processado
+        """
         headers = self._get_headers()
         if not headers:
             return []
 
         url_venda = f"{self.base_url}/venda"
-        linhas: List[dict] = []
+        vendas_brutos: List[dict] = []
         data_atual = data_inicio
 
         while data_atual <= data_fim:
@@ -113,29 +171,40 @@ class CometaClient:
                     verify=self.verify_ssl,
                     timeout=self.timeout,
                 )
+                
                 if res.status_code == 200:
                     dados = res.json()
-
-                    info_loja = dados.get("LOJA", {}) if isinstance(dados, dict) else {}
-                    lista_vendas = (
-                        dados.get("VENDAS", [])
-                        if isinstance(dados, dict)
-                        else (dados if isinstance(dados, list) else [])
-                    )
-
-                    for venda in lista_vendas:
-                        linha = {
-                            "ID_LOJA": info_loja.get("LOJA", loja_id),
-                            "NOME_LOJA": info_loja.get("NOME", ""),
-                            "CNPJ_LOJA": info_loja.get("CNPJ", ""),
-                        }
-                        linha.update(venda)
-                        linhas.append(linha)
+                    
+                    # Sanitização: validação básica antes de adicionar
+                    if dados is None:
+                        self.logger.debug(
+                            "Vendas response for loja=%s, period=%s-%s is None, skipping",
+                            loja_id, data_atual.date(), intervalo_fim.date()
+                        )
+                    elif isinstance(dados, (dict, list)):
+                        vendas_brutos.append(dados)
+                    else:
+                        self.logger.warning(
+                            "Vendas response for loja=%s has unexpected type: %s. Expected dict or list",
+                            loja_id, type(dados).__name__
+                        )
                 else:
-                    self.logger.error("Vendas request failed for loja %s: %s", loja_id, res.status_code)
+                    self.logger.warning(
+                        "Vendas request for loja=%s failed: status_code=%s",
+                        loja_id, res.status_code
+                    )
             except Exception:
-                self.logger.exception("Vendas request failed for loja %s", loja_id)
+                self.logger.exception(
+                    "Vendas request failed for loja=%s, period=%s-%s",
+                    loja_id, data_atual.date(), intervalo_fim.date()
+                )
 
             data_atual = intervalo_fim + timedelta(days=1)
 
-        return linhas
+        # Sanitização: retorna lista vazia se nenhum dado foi coletado
+        if not vendas_brutos:
+            self.logger.debug("No vendas data collected for loja=%s", loja_id)
+            return []
+        
+        # Desplanicar os dados antes de retornar
+        return flatten_vendas(vendas_brutos)

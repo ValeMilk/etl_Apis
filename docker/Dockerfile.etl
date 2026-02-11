@@ -15,12 +15,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY src/ /app/
 
 # Create non-root user
-RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app
+RUN useradd -m -u 1001 etluser && \
+    chown -R etluser:etluser /app
 
 # Switch to non-root user
-USER appuser
+USER etluser
 
-EXPOSE 8000
-
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# ETL worker entry point
+CMD ["python", "etl_worker.py"]

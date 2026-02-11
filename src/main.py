@@ -1,58 +1,76 @@
 import logging
-import os
 
-from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
-from api_cometa import CometaClient
 from App.api.routes import create_router
+from App.core.config import settings
 from App.core.database import DatabaseClient
-from App.etl.etl_service import ETLService
 
-
-def _configure_logging() -> None:
-	log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-	logging.basicConfig(
-		level=log_level,
-		format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-	)
-
-
+# Carrega variáveis de ambiente
 load_dotenv()
-_configure_logging()
 
-logger = logging.getLogger("Main")
-
-db_url = os.getenv("DB_URL", "")
-if not db_url:
-	logger.warning("DB_URL is not set")
-
-cometa_client = CometaClient(
-	base_url=os.getenv("API_BASE_URL", ""),
-	email=os.getenv("API_EMAIL", ""),
-	password=os.getenv("API_PASSWORD", ""),
-	timeout=int(os.getenv("REQUEST_TIMEOUT", "30")),
-	verify_ssl=os.getenv("VERIFY_SSL", "false").lower() == "true",
+# Configura logging
+logging.basicConfig(
+    level=settings.log_level,
+    format="%(asctime)s | %(levelname)-8s | %(name)-25s | %(message)s",
 )
-db_client = DatabaseClient(db_url=db_url)
-etl_service = ETLService(cometa_client, db_client)
+logger = logging.getLogger("API")
 
-app = FastAPI(title="BI_COMETA", version="1.0.0")
+logger.info("BI_COMETA API Starting...")
+logger.info("Configuration loaded and validated")
+
+# Inicializa cliente de banco de dados
+db_client = DatabaseClient(db_url=settings.db_url, echo=settings.database_echo)
+logger.info("DatabaseClient initialized")
+
+# Configura FastAPI
+app = FastAPI(title=settings.app_title, version=settings.app_version)
+
+# Middlewares de segurança
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["GET"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+logger.info("CORSMiddleware configured with origins: %s", settings.cors_origins)
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+logger.info("GZipMiddleware configured (minimum_size=1000)") 
+
 app.include_router(create_router(db_client))
-
-scheduler = BackgroundScheduler()
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-	logger.info("Starting scheduler")
-	scheduler.add_job(etl_service.processar_estoque, "interval", hours=1, id="etl_estoque")
-	scheduler.add_job(etl_service.processar_vendas, "interval", hours=1, id="etl_vendas")
-	scheduler.start()
+logger.info("FastAPI app configured")
 
 
-@app.on_event("shutdown")
-def on_shutdown() -> None:
-	logger.info("Stopping scheduler")
-	scheduler.shutdown(wait=False)
+@app.get("/health")
+def health_check() -> dict:
+    """Health check para disponibilidade da API."""
+    return {
+        "status": "healthy",
+        "service": "api",
+        "version": settings.app_version,
+    }
+
+
+@app.get("/health/db")
+def health_check_db() -> dict:
+    """Health check de conectividade com PostgreSQL."""
+    try:
+        # Tenta fetch rápido para validar conexão
+        db_client.fetch_vendas()
+        return {
+            "status": "healthy",
+            "service": "database",
+            "type": "postgresql",
+        }
+    except Exception as e:
+        logger.error("Database health check failed: %s", e)
+        return {
+            "status": "unhealthy",
+            "service": "database",
+            "error": str(e),
+        }
