@@ -23,14 +23,17 @@ class CometaClient:
         password: str,
         timeout: int = 30,
         verify_ssl: bool = False,
+        token_refresh_hours: int = 12,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.email = email
         self.password = password
         self.timeout = timeout
         self.verify_ssl = verify_ssl
+        self.token_refresh_hours = token_refresh_hours
         self.logger = logging.getLogger(self.__class__.__name__)
         self._token: Optional[str] = None
+        self._token_obtained_at: Optional[datetime] = None
 
     def _obter_token(self) -> Optional[str]:
         """Autentica na API e retorna o token."""
@@ -45,15 +48,33 @@ class CometaClient:
                 timeout=self.timeout,
             )
             if response.status_code == 200:
-                return response.text.strip()
+                token = response.text.strip()
+                self._token_obtained_at = datetime.now()
+                self.logger.info("Token obtained successfully, valid for ~%dh", self.token_refresh_hours)
+                return token
             self.logger.error("Login failed: %s", response.status_code)
         except Exception:
             self.logger.exception("Login request failed")
         return None
 
+    def _is_token_expired(self) -> bool:
+        """Verifica se o token precisa ser renovado (token Cometa expira diariamente)."""
+        if not self._token or not self._token_obtained_at:
+            return True
+        elapsed = datetime.now() - self._token_obtained_at
+        return elapsed >= timedelta(hours=self.token_refresh_hours)
+
+    def _force_refresh_token(self) -> None:
+        """Força renovação do token (chamado após 401)."""
+        self.logger.warning("Forcing token refresh")
+        self._token = None
+        self._token_obtained_at = None
+        self._token = self._obter_token()
+
     def _get_headers(self) -> Optional[dict]:
-        """Retorna headers com autenticação, fazendo login se necessário."""
-        if not self._token:
+        """Retorna headers com autenticação, renovando token se expirado."""
+        if self._is_token_expired():
+            self.logger.info("Token expired or missing, refreshing...")
             self._token = self._obter_token()
         if not self._token:
             return None
@@ -115,6 +136,24 @@ class CometaClient:
                 # Desplanicar/padronizar dados
                 return flatten_estoque(estoque_list)
             
+            if response.status_code == 401:
+                self.logger.warning("Estoque request got 401, refreshing token and retrying")
+                self._force_refresh_token()
+                headers = self._get_headers()
+                if headers:
+                    retry = requests.get(
+                        f"{self.base_url}/estoque",
+                        headers=headers,
+                        verify=self.verify_ssl,
+                        timeout=self.timeout,
+                    )
+                    if retry.status_code == 200:
+                        dados = retry.json()
+                        if isinstance(dados, list):
+                            return flatten_estoque(dados)
+                self.logger.error("Estoque request failed after token refresh")
+                return []
+
             self.logger.error("Estoque request failed: status_code=%s", response.status_code)
         except Exception:
             self.logger.exception("Estoque request failed")
@@ -188,6 +227,25 @@ class CometaClient:
                             "Vendas response for loja=%s has unexpected type: %s. Expected dict or list",
                             loja_id, type(dados).__name__
                         )
+                elif res.status_code == 401:
+                    self.logger.warning(
+                        "Vendas request for loja=%s got 401, refreshing token and retrying",
+                        loja_id
+                    )
+                    self._force_refresh_token()
+                    headers = self._get_headers()
+                    if headers:
+                        retry = requests.get(
+                            url_venda,
+                            headers=headers,
+                            params=params,
+                            verify=self.verify_ssl,
+                            timeout=self.timeout,
+                        )
+                        if retry.status_code == 200:
+                            dados = retry.json()
+                            if isinstance(dados, (dict, list)):
+                                vendas_brutos.append(dados)
                 else:
                     self.logger.warning(
                         "Vendas request for loja=%s failed: status_code=%s",

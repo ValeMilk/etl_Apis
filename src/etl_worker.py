@@ -62,6 +62,7 @@ def run_etl_job():
             password=settings.api_password.get_secret_value(),
             timeout=settings.request_timeout,
             verify_ssl=settings.verify_ssl,
+            token_refresh_hours=settings.token_refresh_hours,
         )
         logger.info("CometaClient initialized")
 

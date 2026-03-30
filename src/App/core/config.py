@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     api_password: SecretStr = Field(..., description="Cometa API password")
     verify_ssl: bool = Field(default=False, description="Verify SSL certificates")
     request_timeout: int = Field(default=30, ge=5, le=300, description="Request timeout in seconds")
+    token_refresh_hours: int = Field(default=12, ge=1, le=23, description="Hours before forcing token refresh (Cometa token expires daily)")
 
     # Security (FastAPI Auth)
     api_auth_token: SecretStr = Field(..., description="Bearer token for API authentication")
