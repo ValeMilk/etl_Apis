@@ -1,3 +1,4 @@
+import calendar
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -11,62 +12,72 @@ class ETLService:
     """
     Orquestra extração, transformação e carga de dados.
     Busca dados da API Cometa e persiste em PostgreSQL.
+    
+    Args:
+        cometa_client: Cliente para API Cometa (autenticado)
+        db_client: Cliente de banco de dados
+        target: 'valemilk' ou 'valefish' (define tabelas de destino)
     """
 
-    def __init__(self, cometa_client: CometaClient, db_client: DatabaseClient) -> None:
+    def __init__(self, cometa_client: CometaClient, db_client: DatabaseClient, target: str = "valemilk") -> None:
         self.cometa_client = cometa_client
         self.db_client = db_client
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.target = target
+        self.logger = logging.getLogger(f"ETLService[{target}]")
 
     def processar_vendas(self) -> None:
         """
-        ETL de vendas: busca lojas, extrai vendas mensais, desplanifica e upserta.
+        ETL de vendas:
+        - Mês anterior (lookback 5 dias): get_vendas_loja por loja (API exige filtro de loja para datas antigas)
+        - Mês atual: get_vendas_periodo sem filtro de loja (API rejeita filtro de loja para datas recentes)
         """
         self.logger.info("Starting vendas ETL")
-        lojas = self.cometa_client.list_lojas()
-        if not lojas:
-            self.logger.warning("No lojas found for vendas")
-            return
 
-        inicio_mes = datetime.now().replace(day=1)
-        fim = datetime.now()
+        hoje = datetime.now()
+        inicio_mes_atual = hoje.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        fim = hoje - timedelta(days=1)  # API tem dados até ontem
         todas_vendas: List[dict] = []
-        lojas_sucesso = 0
-        lojas_falha = 0
 
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            futuros = {
-                executor.submit(self.cometa_client.get_vendas_loja, loja, inicio_mes, fim): loja
-                for loja in lojas
-            }
-            for future in as_completed(futuros):
-                loja_id = futuros[future]
-                try:
-                    vendas_loja = future.result()
-                    todas_vendas.extend(vendas_loja)
-                    lojas_sucesso += 1
-                    self.logger.info(
-                        "Loja %s: %d vendas processadas (sucesso: %d/%d)",
-                        loja_id, len(vendas_loja), lojas_sucesso, len(lojas)
-                    )
-                except Exception:
-                    lojas_falha += 1
-                    self.logger.exception(
-                        "Failed to fetch vendas for loja %s (falha: %d/%d)",
-                        loja_id, lojas_falha, len(lojas)
-                    )
+        # ── Lookback mês anterior (ex: 27-31/03) via get_vendas_loja por loja ──
+        inicio_lookback = inicio_mes_atual - timedelta(days=5)
+        if inicio_lookback.date() < inicio_mes_atual.date():
+            fim_mes_anterior = inicio_mes_atual - timedelta(days=1)
+            self.logger.info(
+                "Fetching prev month vendas %s to %s (per loja)",
+                inicio_lookback.date(), fim_mes_anterior.date()
+            )
+            lojas = self.cometa_client.list_lojas()
+            if lojas:
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    futuros = {
+                        executor.submit(
+                            self.cometa_client.get_vendas_loja, loja, inicio_lookback, fim_mes_anterior
+                        ): loja
+                        for loja in lojas
+                    }
+                    for future in as_completed(futuros):
+                        try:
+                            todas_vendas.extend(future.result())
+                        except Exception:
+                            self.logger.exception("Failed prev month vendas for loja %s", futuros[future])
 
-        self.logger.info(
-            "Vendas collection summary: sucesso=%d, falha=%d, total_vendas=%d",
-            lojas_sucesso, lojas_falha, len(todas_vendas)
-        )
+        # ── Mês atual (ex: 01-02/04) via get_vendas_periodo sem filtro de loja ──
+        if fim.date() >= inicio_mes_atual.date():
+            self.logger.info(
+                "Fetching current month vendas %s to %s (sem filtro de loja)",
+                inicio_mes_atual.date(), fim.date()
+            )
+            vendas_mes_atual = self.cometa_client.get_vendas_periodo(inicio_mes_atual, fim)
+            todas_vendas.extend(vendas_mes_atual)
 
         if not todas_vendas:
-            self.logger.warning("No vendas fetched after processing all lojas")
+            self.logger.warning("No vendas fetched")
             return
 
-        # Dados já saem desplanificados do cliente
-        deleted, inserted = self.db_client.upsert_vendas(todas_vendas)
+        if self.target == "valefish":
+            deleted, inserted = self.db_client.upsert_vendas_valefish(todas_vendas)
+        else:
+            deleted, inserted = self.db_client.upsert_vendas(todas_vendas)
         self.logger.info(
             "Vendas ETL finished. Deleted=%d Inserted=%d Total_rows=%d",
             deleted, inserted, len(todas_vendas)
@@ -83,7 +94,10 @@ class ETLService:
             return
 
         # Dados já saem desplanificados do cliente
-        deleted, inserted = self.db_client.replace_estoque(estoque)
+        if self.target == "valefish":
+            deleted, inserted = self.db_client.replace_estoque_valefish(estoque)
+        else:
+            deleted, inserted = self.db_client.replace_estoque(estoque)
         self.logger.info("Estoque ETL finished. Deleted=%d Inserted=%d Total_rows=%d", deleted, inserted, len(estoque))
 
     def processar_tudo(self) -> None:
@@ -98,72 +112,64 @@ class ETLService:
         Respeita limite de 3 dias da API Cometa.
         
         Args:
-            data_inicio: Data inicial (default: 01/01/2025)
+            data_inicio: Data inicial (default: 02/11/2022)
             data_fim: Data final (default: hoje)
         """
         if data_inicio is None:
-            data_inicio = datetime(2025, 1, 1)
+            data_inicio = datetime(2022, 11, 2)
         if data_fim is None:
-            data_fim = datetime.now()
+            data_fim = datetime.now() - timedelta(days=1)  # API tem dados até ontem
             
         self.logger.info(f"🔄 Bootstrap vendas from {data_inicio.date()} to {data_fim.date()}")
-        self.logger.info("⚠️  Puxando dados de 3 em 3 dias (limite da API)")
+        self.logger.info("⚠️  Puxando dados de 3 em 3 dias (limite da API), sem filtro de loja")
         
-        lojas = self.cometa_client.list_lojas()
-        if not lojas:
-            self.logger.warning("No lojas found for vendas bootstrap")
-            return
-            
-        todas_vendas: List[dict] = []
         total_requisicoes = 0
-        
+        total_vendas_inseridas = 0
+        BATCH_WINDOWS = 30  # Upsert a cada 30 janelas (~90 dias) para evitar OOM
+        batch_vendas: List[dict] = []
+
         # Loop de 3 em 3 dias
         data_atual = data_inicio
         while data_atual <= data_fim:
-            # Próx 3 dias (window máximo da API: dia D + 2 = 3 dias total)
-            # data_fim calculado como data_atual + 2 dias (inclusive)
-            data_chunk_fim = min(data_atual + timedelta(days=2), data_fim)
-            
+            # Limita ao menor de: 3 dias à frente, último dia do mês atual, data_fim
+            # A API Cometa rejeita janelas que cruzam limite de mês
+            ultimo_dia_mes = calendar.monthrange(data_atual.year, data_atual.month)[1]
+            fim_mes = data_atual.replace(day=ultimo_dia_mes, hour=23, minute=59, second=59)
+            data_chunk_fim = min(data_atual + timedelta(days=2), fim_mes, data_fim)
+
             self.logger.info(f"📅 Fetching {data_atual.date()} → {data_chunk_fim.date()}")
-            
-            lojas_sucesso = 0
-            lojas_falha = 0
-            vendas_periodo = 0
-            
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                futuros = {
-                    executor.submit(self.cometa_client.get_vendas_loja, loja, data_atual, data_chunk_fim): loja
-                    for loja in lojas
-                }
-                for future in as_completed(futuros):
-                    loja_id = futuros[future]
-                    try:
-                        vendas_loja = future.result()
-                        todas_vendas.extend(vendas_loja)
-                        vendas_periodo += len(vendas_loja)
-                        lojas_sucesso += 1
-                    except Exception as e:
-                        lojas_falha += 1
-                        self.logger.warning(f"Failed to fetch vendas for loja {loja_id}: {e}")
-            
+
+            vendas_periodo = self.cometa_client.get_vendas_periodo(data_atual, data_chunk_fim)
+            batch_vendas.extend(vendas_periodo)
+
             total_requisicoes += 1
             self.logger.info(
-                f"✅ Period {data_atual.date()} → {data_chunk_fim.date()}: "
-                f"{vendas_periodo} vendas (lojas: {lojas_sucesso} ok, {lojas_falha} falha)"
+                f"✅ Period {data_atual.date()} → {data_chunk_fim.date()}: {len(vendas_periodo)} vendas"
             )
-            
-            # Próximo dia é o dia seguinte ao fim do chunk atual
+
+            # Upsert em batch a cada BATCH_WINDOWS janelas para liberar memória
+            if total_requisicoes % BATCH_WINDOWS == 0 and batch_vendas:
+                self.logger.info(f"💾 Batch upsert: {len(batch_vendas)} vendas...")
+                if self.target == "valefish":
+                    _, inserted = self.db_client.upsert_vendas_valefish(batch_vendas)
+                else:
+                    _, inserted = self.db_client.upsert_vendas(batch_vendas)
+                total_vendas_inseridas += inserted
+                self.logger.info(f"💾 Batch upsert concluído: {inserted} inseridas (total: {total_vendas_inseridas})")
+                batch_vendas = []
+
             data_atual = data_chunk_fim + timedelta(days=1)
-        
-        self.logger.info(f"✅ Bootstrap completed: {total_requisicoes} day-windows, {len(todas_vendas)} total vendas")
-        
-        if not todas_vendas:
-            self.logger.warning("No vendas fetched during bootstrap")
-            return
-        
-        # Upsert todos os dados
-        deleted, inserted = self.db_client.upsert_vendas(todas_vendas)
+
+        # Upsert do restante
+        if batch_vendas:
+            self.logger.info(f"💾 Final upsert: {len(batch_vendas)} vendas...")
+            if self.target == "valefish":
+                _, inserted = self.db_client.upsert_vendas_valefish(batch_vendas)
+            else:
+                _, inserted = self.db_client.upsert_vendas(batch_vendas)
+            total_vendas_inseridas += inserted
+
         self.logger.info(
-            "Vendas bootstrap finished. Deleted=%d Inserted=%d Total_rows=%d",
-            deleted, inserted, len(todas_vendas)
+            "Vendas bootstrap finished. Total_windows=%d Total_rows=%d",
+            total_requisicoes, total_vendas_inseridas
         )

@@ -15,7 +15,7 @@ Uso via Docker:
 
 import sys
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 
 sys.path.insert(0, '/app')
@@ -55,6 +55,20 @@ class Bootstrap:
             )
             self.etl_service = ETLService(self.cometa_client, self.db_client)
 
+            # ValeFish
+            self.etl_service_valefish = None
+            if settings.valefish_api_email:
+                self.cometa_client_valefish = CometaClient(
+                    base_url=settings.api_base_url,
+                    email=settings.valefish_api_email,
+                    password=settings.valefish_api_password.get_secret_value(),
+                    timeout=settings.request_timeout,
+                    verify_ssl=settings.verify_ssl,
+                    token_refresh_hours=settings.token_refresh_hours,
+                )
+                self.etl_service_valefish = ETLService(self.cometa_client_valefish, self.db_client, target="valefish")
+                logger.info("✅ ValeFish clients initialized")
+
             logger.info("✅ All clients initialized")
         except Exception as e:
             logger.error(f"❌ Failed to initialize: {e}", exc_info=True)
@@ -63,9 +77,9 @@ class Bootstrap:
     def is_bootstrap_needed(self) -> bool:
         """Verifica se banco precisa de bootstrap."""
         try:
-            with self.db_client.get_connection() as conn:
+            with self.db_client.get_session() as session:
                 # Verifica se tabela vendas existe
-                result = conn.execute(
+                result = session.execute(
                     text(
                         "SELECT COUNT(*) FROM information_schema.tables "
                         "WHERE table_name='vendas'"
@@ -77,7 +91,7 @@ class Bootstrap:
                     return True
 
                 # Conta vendas
-                count = conn.execute(text("SELECT COUNT(*) FROM vendas")).scalar() or 0
+                count = session.execute(text("SELECT COUNT(*) FROM vendas")).scalar() or 0
 
                 if count == 0:
                     logger.info("❌ Tabela 'vendas' está vazia - Bootstrap necessário")
@@ -106,21 +120,21 @@ class Bootstrap:
             # Contagem antes
             vendas_antes = 0
             try:
-                with self.db_client.get_connection() as conn:
-                    vendas_antes = conn.execute(
+                with self.db_client.get_session() as session:
+                    vendas_antes = session.execute(
                         text("SELECT COUNT(*) FROM vendas")
                     ).scalar() or 0
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Could not count vendas before bootstrap: {e}")
 
             logger.info(f"Vendas before: {vendas_antes}")
             logger.info("")
 
-            # Coleta de vendas (histórico de 3 em 3 dias desde 01/01/2025)
-            logger.info("📊 Collecting vendas (3-day windows from 01/01/2025)...")
+            # Coleta de vendas (histórico de 3 em 3 dias desde 02/11/2022)
+            logger.info("📊 Collecting vendas (3-day windows from 02/11/2022)...")
             self.etl_service.bootstrap_vendas(
-                data_inicio=datetime(2025, 1, 1),
-                data_fim=datetime.now()
+                data_inicio=datetime(2022, 11, 2),
+                data_fim=datetime.now() - timedelta(days=1)  # API tem dados até ontem
             )
 
             logger.info("")
@@ -129,15 +143,26 @@ class Bootstrap:
             logger.info("📦 Collecting estoque...")
             self.etl_service.processar_estoque()
 
+            # ── ValeFish Bootstrap ──
+            if self.etl_service_valefish:
+                logger.info("")
+                logger.info("🐟 Starting ValeFish bootstrap...")
+                self.etl_service_valefish.bootstrap_vendas(
+                    data_inicio=datetime(2025, 1, 1),
+                    data_fim=datetime.now() - timedelta(days=1)  # API tem dados até ontem
+                )
+                self.etl_service_valefish.processar_estoque()
+                logger.info("✅ ValeFish bootstrap completed")
+
             # Contagem depois
             vendas_depois = 0
             try:
-                with self.db_client.get_connection() as conn:
-                    vendas_depois = conn.execute(
+                with self.db_client.get_session() as session:
+                    vendas_depois = session.execute(
                         text("SELECT COUNT(*) FROM vendas")
                     ).scalar() or 0
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Could not count vendas after bootstrap: {e}")
 
             vendas_carregadas = vendas_depois - vendas_antes
 

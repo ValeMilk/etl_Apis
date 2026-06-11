@@ -1,0 +1,30 @@
+============================================
+ESTOQUE VALEFISH (Editor Avançado)
+============================================
+
+let
+    BaseUrl = "http://72.61.62.17:8887",
+    Endpoint = "/api/v1/estoque/valefish",
+    BearerToken = "4f6f7b3c1d9e2a8f5b4d7c0e8a9b2d1f6c5e4a3b2d1f0e9d8c7b6a5f4e3d2c1b-lcsjbdcçkdjcn.knd-sdc-dcbskdm.shciwuegiucgwiurck",
+    Url = BaseUrl & Endpoint,
+    Response = Json.Document(Web.Contents(Url, [Headers = [#"Authorization" = "Bearer " & BearerToken]])),
+    Tabela = Table.FromList(Response, Splitter.SplitByNothing()),
+    Expandida = Table.ExpandRecordColumn(Tabela, "Column1", {"snapshot_ts", "loja_id", "codigo_produto", "descricao_produto", "ean", "estq_loja", "estq_avaria"})
+in
+    Expandida
+
+
+============================================
+VENDAS VALEFISH (Editor Avançado)
+============================================
+
+let
+    BaseUrl = "http://72.61.62.17:8887",
+    Endpoint = "/api/v1/vendas/valefish",
+    BearerToken = "4f6f7b3c1d9e2a8f5b4d7c0e8a9b2d1f6c5e4a3b2d1f0e9d8c7b6a5f4e3d2c1b-lcsjbdcçkdjcn.knd-sdc-dcbskdm.shciwuegiucgwiurck",
+    Url = BaseUrl & Endpoint,
+    Response = Json.Document(Web.Contents(Url, [Headers = [#"Authorization" = "Bearer " & BearerToken]])),
+    Tabela = Table.FromList(Response, Splitter.SplitByNothing()),
+    Expandida = Table.ExpandRecordColumn(Tabela, "Column1", {"id", "data_venda", "loja_id", "pdv", "codigo_produto", "descricao_produto", "ean", "quantidade", "valor_unitario", "valor_total", "valor_desconto", "valor_acrescimo"})
+in
+    Expandida

@@ -1,4 +1,4 @@
-services:
+docker logs bi_cometa_etl --tail 50 | grep -i infomarketservices:
   db:
     image: postgres:15
     container_name: bi_cometa_db
@@ -6,8 +6,8 @@ services:
       POSTGRES_DB: bi_cometa
       POSTGRES_USER: bi_user
       POSTGRES_PASSWORD: bi_password
-    # PostgreSQL isolado - sem exposição externa
-    # Acesso apenas via rede interna bi_network
+    ports:
+      - "5434:5432"
     networks:
       - bi_network
     volumes:

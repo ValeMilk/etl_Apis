@@ -14,6 +14,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 
 from api_cometa import CometaClient
+from infomarket_client import InfomarketClient
 from App.core.config import settings
 from App.core.database import DatabaseClient
 from App.etl.etl_service import ETLService
@@ -64,7 +65,7 @@ def run_etl_job():
             verify_ssl=settings.verify_ssl,
             token_refresh_hours=settings.token_refresh_hours,
         )
-        logger.info("CometaClient initialized")
+        logger.info("CometaClient [ValeMilk] initialized")
 
         db_client = DatabaseClient(
             db_url=settings.db_url, 
@@ -72,18 +73,73 @@ def run_etl_job():
         )
         logger.info("DatabaseClient initialized")
 
-        etl_service = ETLService(cometa_client, db_client)
-        logger.info("ETLService initialized")
+        etl_service = ETLService(cometa_client, db_client, target="valemilk")
+        logger.info("ETLService [ValeMilk] initialized")
 
-        # Processa Vendas
-        logger.info("Starting Vendas processing...")
+        # Processa Vendas ValeMilk
+        logger.info("Starting Vendas [ValeMilk] processing...")
         etl_service.processar_vendas()
-        logger.info("Vendas processing completed")
+        logger.info("Vendas [ValeMilk] processing completed")
 
-        # Processa Estoque
-        logger.info("Starting Estoque processing...")
+        # Processa Estoque ValeMilk
+        logger.info("Starting Estoque [ValeMilk] processing...")
         etl_service.processar_estoque()
-        logger.info("Estoque processing completed")
+        logger.info("Estoque [ValeMilk] processing completed")
+
+        # ── ValeFish ──
+        if settings.valefish_api_email:
+            cometa_client_valefish = CometaClient(
+                base_url=settings.api_base_url,
+                email=settings.valefish_api_email,
+                password=settings.valefish_api_password.get_secret_value(),
+                timeout=settings.request_timeout,
+                verify_ssl=settings.verify_ssl,
+                token_refresh_hours=settings.token_refresh_hours,
+            )
+            logger.info("CometaClient [ValeFish] initialized")
+
+            etl_service_valefish = ETLService(cometa_client_valefish, db_client, target="valefish")
+            logger.info("ETLService [ValeFish] initialized")
+
+            logger.info("Starting Vendas [ValeFish] processing...")
+            etl_service_valefish.processar_vendas()
+            logger.info("Vendas [ValeFish] processing completed")
+
+            logger.info("Starting Estoque [ValeFish] processing...")
+            etl_service_valefish.processar_estoque()
+            logger.info("Estoque [ValeFish] processing completed")
+        else:
+            logger.info("ValeFish credentials not configured, skipping")
+
+        # ── InfoMarket (encartes/preços) ──
+        if settings.infomarket_email:
+            from datetime import timedelta
+            try:
+                infomarket_client = InfomarketClient(
+                    email=settings.infomarket_email,
+                    password=settings.infomarket_password.get_secret_value(),
+                    timeout=settings.request_timeout,
+                )
+                logger.info("InfomarketClient initialized")
+
+                hoje = datetime.now()
+                start_date = hoje - timedelta(days=settings.infomarket_lookback_days)
+                finish_date = hoje + timedelta(days=settings.infomarket_lookahead_days)
+
+                logger.info(
+                    "Starting InfoMarket processing (%s → %s)...",
+                    start_date.strftime("%Y-%m-%d"), finish_date.strftime("%Y-%m-%d")
+                )
+                records = infomarket_client.get_prices(start_date, finish_date)
+                if records:
+                    deleted, inserted = db_client.replace_infomarket(records)
+                    logger.info("InfoMarket finished. Deleted=%d Inserted=%d", deleted, inserted)
+                else:
+                    logger.warning("InfoMarket: nenhum registro retornado")
+            except Exception as e:
+                logger.warning("InfoMarket skipped due to error: %s", e)
+        else:
+            logger.info("InfoMarket credentials not configured, skipping")
 
         job_end = datetime.now()
         duration = (job_end - job_start).total_seconds()
@@ -113,7 +169,7 @@ def main():
         "interval",
         minutes=settings.etl_interval_minutes,
         id="etl_job",
-        name="ETL Job (Vendas + Estoque)",
+        name="ETL Job (ValeMilk + ValeFish)",
         next_run_time=datetime.now(),  # Executa imediatamente no startup
     )
 

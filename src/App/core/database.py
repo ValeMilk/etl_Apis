@@ -13,6 +13,7 @@ from sqlalchemy import (
     Float,
     Date,
     DateTime,
+    Text,
     select,
     delete,
     insert,
@@ -55,6 +56,71 @@ class DatabaseClient:
             Column("ean", String(20), nullable=True),
             Column("estq_loja", Integer, nullable=False, default=0),
             Column("estq_avaria", Integer, nullable=False, default=0),
+        )
+
+        # ValeFish tables (same structure)
+        self.vendas_valefish = Table(
+            "vendas_valefish",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("data", Date, nullable=False),
+            Column("loja_id", Integer, nullable=False),
+            Column("nome_loja", String(255), nullable=True),
+            Column("cnpj_loja", String(18), nullable=True),
+            Column("ean", String(20), nullable=True),
+            Column("cod_interno", String(50), nullable=True),
+            Column("plu", Integer, nullable=True),
+            Column("produto", String(500), nullable=True),
+            Column("qtd", Float, nullable=False, default=0.0),
+            Column("venda", Float, nullable=False, default=0.0),
+            Column("custo", Float, nullable=False, default=0.0),
+            Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
+        )
+
+        self.estoque_valefish = Table(
+            "estoque_valefish",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("snapshot_ts", DateTime, default=datetime.utcnow, nullable=False),
+            Column("loja_id", Integer, nullable=False),
+            Column("codigo_produto", String(50), nullable=False),
+            Column("descricao_produto", String(500), nullable=False),
+            Column("ean", String(20), nullable=True),
+            Column("estq_loja", Integer, nullable=False, default=0),
+            Column("estq_avaria", Integer, nullable=False, default=0),
+        )
+
+        self.infomarket = Table(
+            "infomarket",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("price_id", String(50), nullable=False),
+            Column("item_id", String(50), nullable=True),
+            Column("description", String(500), nullable=True),
+            Column("eans", String(500), nullable=True),
+            Column("leaflet_id", String(50), nullable=True),
+            Column("number_of_pages", Integer, nullable=True),
+            Column("leaflet_name", String(255), nullable=True),
+            Column("leaflet_type", String(100), nullable=True),
+            Column("delivery_channel", String(100), nullable=True),
+            Column("store_id", String(50), nullable=True),
+            Column("store_name", String(255), nullable=True),
+            Column("value", Float, nullable=True),
+            Column("validity_start_date", Date, nullable=True),
+            Column("validity_finish_date", Date, nullable=True),
+            Column("dynamic", String(100), nullable=True),
+            Column("minimum_quantity", Integer, nullable=True),
+            Column("details", Text, nullable=True),
+            Column("page", Integer, nullable=True),
+            Column("city_name", String(255), nullable=True),
+            Column("city_id", String(50), nullable=True),
+            Column("network_id", String(50), nullable=True),
+            Column("network_name", String(255), nullable=True),
+            Column("brand_id", String(50), nullable=True),
+            Column("brand_name", String(255), nullable=True),
+            Column("identifier", String(100), nullable=True, unique=True),
+            Column("store_cnpj", String(20), nullable=True),
+            Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
         )
 
         self.metadata.create_all(self.engine)
@@ -143,6 +209,74 @@ class DatabaseClient:
             self.estoque.c.snapshot_ts.desc(),
             self.estoque.c.loja_id.asc(),
             self.estoque.c.codigo_produto.asc(),
+        )
+        if limit:
+            stmt = stmt.limit(limit)
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+
+        return [dict(row) for row in rows]
+
+    # ── ValeFish methods ──
+
+    def upsert_vendas_valefish(self, vendas: Iterable[dict]) -> Tuple[int, int]:
+        """Upsert vendas ValeFish (mesma lógica da ValeMilk)."""
+        rows, date_range = self._prepare_vendas_rows(vendas)
+        if not rows:
+            self.logger.info("No vendas_valefish rows to upsert")
+            return 0, 0
+
+        min_date, max_date = date_range
+        deleted = 0
+        inserted = 0
+
+        with self.get_session() as session:
+            delete_stmt = delete(self.vendas_valefish).where(self.vendas_valefish.c.data.between(min_date, max_date))
+            result = session.execute(delete_stmt)
+            deleted = result.rowcount or 0
+            session.execute(insert(self.vendas_valefish), rows)
+            inserted = len(rows)
+
+        self.logger.info("Upserted vendas_valefish. Deleted=%s Inserted=%s", deleted, inserted)
+        return deleted, inserted
+
+    def replace_estoque_valefish(self, estoque: Iterable[dict]) -> Tuple[int, int]:
+        """Replace estoque ValeFish (mesma lógica da ValeMilk)."""
+        rows = self._prepare_estoque_rows(estoque)
+        if not rows:
+            self.logger.info("No estoque_valefish rows to replace")
+            return 0, 0
+
+        deleted = 0
+        inserted = 0
+
+        with self.get_session() as session:
+            result = session.execute(delete(self.estoque_valefish))
+            deleted = result.rowcount or 0
+            session.execute(insert(self.estoque_valefish), rows)
+            inserted = len(rows)
+
+        self.logger.info("Replaced estoque_valefish. Deleted=%s Inserted=%s", deleted, inserted)
+        return deleted, inserted
+
+    def fetch_vendas_valefish(self, limit: Optional[int] = None) -> List[dict]:
+        """Retorna vendas ValeFish ordenadas por data DESC."""
+        stmt = select(self.vendas_valefish).order_by(self.vendas_valefish.c.data.desc(), self.vendas_valefish.c.id.desc())
+        if limit:
+            stmt = stmt.limit(limit)
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+
+        return [dict(row) for row in rows]
+
+    def fetch_estoque_valefish(self, limit: Optional[int] = None) -> List[dict]:
+        """Retorna estoque ValeFish ordenado por snapshot_ts DESC."""
+        stmt = select(self.estoque_valefish).order_by(
+            self.estoque_valefish.c.snapshot_ts.desc(),
+            self.estoque_valefish.c.loja_id.asc(),
+            self.estoque_valefish.c.codigo_produto.asc(),
         )
         if limit:
             stmt = stmt.limit(limit)
@@ -262,3 +396,118 @@ class DatabaseClient:
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    # ── InfoMarket methods ────────────────────────────────────────────────────
+
+    def replace_infomarket(self, records: Iterable[dict]) -> Tuple[int, int]:
+        """
+        Substitui registros InfoMarket do período buscado.
+        Deleta pelo range de validity_start_date e reinsere.
+        """
+        rows, date_range = self._prepare_infomarket_rows(records)
+        if not rows:
+            self.logger.info("No infomarket rows to replace")
+            return 0, 0
+
+        min_date, max_date = date_range
+        deleted = 0
+        inserted = 0
+
+        with self.get_session() as session:
+            delete_stmt = delete(self.infomarket).where(
+                self.infomarket.c.validity_start_date.between(min_date, max_date)
+            )
+            result = session.execute(delete_stmt)
+            deleted = result.rowcount or 0
+            session.execute(insert(self.infomarket), rows)
+            inserted = len(rows)
+
+        self.logger.info("Replaced infomarket. Deleted=%s Inserted=%s", deleted, inserted)
+        return deleted, inserted
+
+    def fetch_infomarket(self, limit: Optional[int] = None) -> List[dict]:
+        """Retorna registros infomarket ordenados por validity_start_date DESC."""
+        stmt = select(self.infomarket).order_by(
+            self.infomarket.c.validity_start_date.desc(),
+            self.infomarket.c.store_name.asc(),
+        )
+        if limit:
+            stmt = stmt.limit(limit)
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+
+        return [dict(row) for row in rows]
+
+    def _prepare_infomarket_rows(self, records: Iterable[dict]) -> Tuple[List[dict], Tuple[date, date]]:
+        """Converte registros da API InfoMarket para linhas do banco."""
+        rows: List[dict] = []
+        min_date: Optional[date] = None
+        max_date: Optional[date] = None
+        now = datetime.utcnow()
+
+        for item in records:
+            price_id = item.get("price_id")
+            if not price_id:
+                self.logger.warning("Skipping infomarket item without price_id")
+                continue
+
+            # Converte datas do formato YYYYMMDD (int) para date
+            start_date = self._parse_infomarket_date(item.get("validity_start_date"))
+            finish_date = self._parse_infomarket_date(item.get("validity_finish_date"))
+
+            # eans é lista — armazena como string separada por vírgula
+            eans_raw = item.get("eans", [])
+            eans_str = ",".join(str(e) for e in eans_raw) if isinstance(eans_raw, list) else str(eans_raw or "")
+
+            row = {
+                "price_id": str(price_id),
+                "item_id": item.get("item_id"),
+                "description": item.get("description"),
+                "eans": eans_str or None,
+                "leaflet_id": item.get("leaflet_id"),
+                "number_of_pages": self._safe_int(item.get("number_of_pages")),
+                "leaflet_name": item.get("leaflet_name"),
+                "leaflet_type": item.get("leaflet_type"),
+                "delivery_channel": item.get("delivery_channel"),
+                "store_id": item.get("store_id"),
+                "store_name": item.get("store_name"),
+                "value": self._safe_float(item.get("value"), 0.0),
+                "validity_start_date": start_date,
+                "validity_finish_date": finish_date,
+                "dynamic": item.get("dynamic"),
+                "minimum_quantity": self._safe_int(item.get("minimum_quantity")),
+                "details": str(item.get("details")) if item.get("details") is not None else None,
+                "page": self._safe_int(item.get("page")),
+                "city_name": item.get("city_name"),
+                "city_id": item.get("city_id"),
+                "network_id": item.get("network_id"),
+                "network_name": item.get("network_name"),
+                "brand_id": item.get("brand_id"),
+                "brand_name": item.get("brand_name"),
+                "identifier": item.get("identifier"),
+                "store_cnpj": item.get("store_cnpj"),
+                "created_at": now,
+            }
+            rows.append(row)
+
+            if start_date:
+                min_date = start_date if min_date is None else min(min_date, start_date)
+                max_date = start_date if max_date is None else max(max_date, start_date)
+
+        if min_date is None:
+            today = datetime.utcnow().date()
+            min_date = today
+            max_date = today
+
+        return rows, (min_date, max_date)  # type: ignore[return-value]
+
+    @staticmethod
+    def _parse_infomarket_date(value) -> Optional[date]:
+        """Converte YYYYMMDD (int ou str) para date. Retorna None se inválido."""
+        if value is None:
+            return None
+        try:
+            return datetime.strptime(str(int(value)), "%Y%m%d").date()
+        except (ValueError, TypeError):
+            return None

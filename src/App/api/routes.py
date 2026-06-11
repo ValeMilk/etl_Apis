@@ -17,29 +17,76 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
     logger = logging.getLogger("Routes")
 
     @router.get("/api/v1/vendas")
-    def listar_vendas(token: TokenDep) -> List[dict]:
+    def listar_vendas(token: TokenDep, limit: int = 0) -> List[dict]:
         """
-        Retorna todas as vendas em ordem cronológica reversa (mais recentes primeiro).
-        Sem paginação - retorna todas as linhas.
+        Retorna vendas em ordem cronológica reversa.
+        Default: sem limite (retorna todos os registros).
+        Use ?limit=N para limitar o número de registros retornados.
         Requer autenticação via Bearer token.
         
         Colunas: data, loja_id, nome_loja, cnpj_loja, ean, cod_interno,
                  plu, produto, qtd, venda, custo, created_at
+        
+        Query params:
+        - limit: número máximo de registros (0 = sem limite, default)
         """
-        logger.info("GET /api/v1/vendas")
-        return db_client.fetch_vendas()
+        effective_limit = limit if limit > 0 else None
+        logger.info("GET /api/v1/vendas limit=%s", effective_limit or "ALL")
+        return db_client.fetch_vendas(limit=effective_limit)
 
     @router.get("/api/v1/estoque")
-    def listar_estoque(token: TokenDep) -> List[dict]:
+    def listar_estoque(token: TokenDep, limit: int = 5000) -> List[dict]:
         """
-        Retorna snapshot atual de estoque.
-        Sem paginação - retorna todos os produtos.
+        Retorna snapshot atual de estoque com limite de registros.
+        Default: 5000 registros (otimizado para Power BI).
         Requer autenticação via Bearer token.
         
         Colunas: snapshot_ts, loja_id, codigo_produto, descricao_produto,
                  ean, estq_loja, estq_avaria
+        
+        Query params:
+        - limit: número máximo de registros (default 5000)
         """
-        logger.info("GET /api/v1/estoque")
-        return db_client.fetch_estoque()
+        logger.info("GET /api/v1/estoque?limit=%d", limit)
+        return db_client.fetch_estoque()[:limit]
+
+    # ── ValeFish Endpoints ──
+
+    @router.get("/api/v1/vendas/valefish")
+    def listar_vendas_valefish(token: TokenDep) -> List[dict]:
+        """
+        Retorna todas as vendas ValeFish em ordem cronológica reversa.
+        Requer autenticação via Bearer token.
+        """
+        logger.info("GET /api/v1/vendas/valefish")
+        return db_client.fetch_vendas_valefish()
+
+    @router.get("/api/v1/estoque/valefish")
+    def listar_estoque_valefish(token: TokenDep) -> List[dict]:
+        """
+        Retorna snapshot atual de estoque ValeFish.
+        Requer autenticação via Bearer token.
+        """
+        logger.info("GET /api/v1/estoque/valefish")
+        return db_client.fetch_estoque_valefish()
+
+    @router.get("/api/v1/infomarket")
+    def listar_infomarket(token: TokenDep, limit: int = 5000) -> List[dict]:
+        """
+        Retorna encartes/preços InfoMarket com limite de registros.
+        Default: 5000 registros (otimizado para Power BI).
+        Requer autenticação via Bearer token.
+
+        Colunas: price_id, item_id, description, eans, leaflet_id,
+                 number_of_pages, leaflet_name, leaflet_type, delivery_channel,
+                 store_id, store_name, value, validity_start_date,
+                 validity_finish_date, dynamic, minimum_quantity, details,
+                 page, city_name, city_id, network_id, network_name
+
+        Query params:
+        - limit: número máximo de registros (default 5000)
+        """
+        logger.info("GET /api/v1/infomarket?limit=%d", limit)
+        return db_client.fetch_infomarket(limit=limit)
 
     return router

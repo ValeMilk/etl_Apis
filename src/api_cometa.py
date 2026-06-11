@@ -1,3 +1,4 @@
+import calendar
 import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -196,6 +197,12 @@ class CometaClient:
             if intervalo_fim > data_fim:
                 intervalo_fim = data_fim
 
+            # A API não aceita janelas que cruzam meses — limita ao último dia do mês atual
+            ultimo_dia_mes = calendar.monthrange(data_atual.year, data_atual.month)[1]
+            fim_mes = data_atual.replace(day=ultimo_dia_mes)
+            if intervalo_fim > fim_mes:
+                intervalo_fim = fim_mes
+
             params = {
                 "loja": int(loja_id),
                 "dataInicial": data_atual.strftime("%d-%m-%Y"),
@@ -265,4 +272,83 @@ class CometaClient:
             return []
         
         # Desplanicar os dados antes de retornar
+        return flatten_vendas(vendas_brutos)
+
+    def get_vendas_periodo(self, data_inicio: datetime, data_fim: datetime) -> List[dict]:
+        """
+        Retorna vendas de TODAS as lojas em um período DESPLANIFICADAS.
+        Não usa filtro de loja — a API retorna todas as lojas de uma vez.
+        Respeita limite de 3 dias e limite de mês por janela.
+        """
+        headers = self._get_headers()
+        if not headers:
+            return []
+
+        url_venda = f"{self.base_url}/venda"
+        vendas_brutos: List[dict] = []
+        data_atual = data_inicio
+
+        while data_atual <= data_fim:
+            intervalo_fim = data_atual + timedelta(days=2)
+            if intervalo_fim > data_fim:
+                intervalo_fim = data_fim
+
+            # Limita ao último dia do mês — API rejeita janelas que cruzam meses
+            ultimo_dia_mes = calendar.monthrange(data_atual.year, data_atual.month)[1]
+            fim_mes = data_atual.replace(day=ultimo_dia_mes)
+            if intervalo_fim > fim_mes:
+                intervalo_fim = fim_mes
+
+            params = {
+                "dataInicial": data_atual.strftime("%d-%m-%Y"),
+                "dataFinal": intervalo_fim.strftime("%d-%m-%Y"),
+            }
+
+            try:
+                res = requests.get(
+                    url_venda,
+                    headers=headers,
+                    params=params,
+                    verify=self.verify_ssl,
+                    timeout=self.timeout,
+                )
+                if res.status_code == 200:
+                    dados = res.json()
+                    if isinstance(dados, list) and dados:
+                        vendas_brutos.extend(dados)  # Cada elemento é uma loja
+                    elif isinstance(dados, dict) and dados:
+                        vendas_brutos.append(dados)
+                elif res.status_code == 401:
+                    self._force_refresh_token()
+                    headers = self._get_headers()
+                    if headers:
+                        retry = requests.get(
+                            url_venda,
+                            headers=headers,
+                            params=params,
+                            verify=self.verify_ssl,
+                            timeout=self.timeout,
+                        )
+                        if retry.status_code == 200:
+                            dados = retry.json()
+                            if isinstance(dados, list) and dados:
+                                vendas_brutos.extend(dados)
+                            elif isinstance(dados, dict) and dados:
+                                vendas_brutos.append(dados)
+                else:
+                    self.logger.warning(
+                        "Vendas periodo request failed: status_code=%s period=%s-%s",
+                        res.status_code, data_atual.date(), intervalo_fim.date()
+                    )
+            except Exception:
+                self.logger.exception(
+                    "Vendas periodo request failed for period %s-%s",
+                    data_atual.date(), intervalo_fim.date()
+                )
+
+            data_atual = intervalo_fim + timedelta(days=1)
+
+        if not vendas_brutos:
+            return []
+
         return flatten_vendas(vendas_brutos)

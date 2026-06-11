@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     request_timeout: int = Field(default=30, ge=5, le=300, description="Request timeout in seconds")
     token_refresh_hours: int = Field(default=12, ge=1, le=23, description="Hours before forcing token refresh (Cometa token expires daily)")
 
+    # API Cometa - ValeFish
+    valefish_api_email: str = Field(default="", description="ValeFish API email")
+    valefish_api_password: SecretStr = Field(default="", description="ValeFish API password")
+
     # Security (FastAPI Auth)
     api_auth_token: SecretStr = Field(..., description="Bearer token for API authentication")
     cors_origins: Union[str, List[str]] = Field(
@@ -43,6 +47,12 @@ class Settings(BaseSettings):
 
     # ETL Schedule
     etl_interval_minutes: int = Field(default=5, ge=1, le=1440, description="ETL interval in minutes")
+
+    # InfoMarket API
+    infomarket_email: str = Field(default="", description="InfoMarket API email")
+    infomarket_password: SecretStr = Field(default="", description="InfoMarket API password")
+    infomarket_lookback_days: int = Field(default=90, ge=0, description="Dias para lookback InfoMarket")
+    infomarket_lookahead_days: int = Field(default=60, ge=1, description="Dias para lookahead InfoMarket")
 
     # FastAPI
     app_title: str = Field(default="BI_COMETA", description="API title")

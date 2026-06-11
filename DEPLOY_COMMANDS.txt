@@ -1,0 +1,40 @@
+============================================
+PASSO 1: Execute no PowerShell local (um por vez)
+============================================
+
+scp "C:\Users\LENOVO 059\Desktop\ETL API\BI_COMETA\src\App\core\database.py" root@72.61.62.17:/home/jefferson_pwr/BI_COMETA/src/App/core/database.py
+
+scp "C:\Users\LENOVO 059\Desktop\ETL API\BI_COMETA\src\App\core\config.py" root@72.61.62.17:/home/jefferson_pwr/BI_COMETA/src/App/core/config.py
+
+scp "C:\Users\LENOVO 059\Desktop\ETL API\BI_COMETA\src\App\etl\etl_service.py" root@72.61.62.17:/home/jefferson_pwr/BI_COMETA/src/App/etl/etl_service.py
+
+scp "C:\Users\LENOVO 059\Desktop\ETL API\BI_COMETA\src\etl_worker.py" root@72.61.62.17:/home/jefferson_pwr/BI_COMETA/src/etl_worker.py
+
+scp "C:\Users\LENOVO 059\Desktop\ETL API\BI_COMETA\src\bootstrap.py" root@72.61.62.17:/home/jefferson_pwr/BI_COMETA/src/bootstrap.py
+
+scp "C:\Users\LENOVO 059\Desktop\ETL API\BI_COMETA\src\App\api\routes.py" root@72.61.62.17:/home/jefferson_pwr/BI_COMETA/src/App/api/routes.py
+
+scp "C:\Users\LENOVO 059\Desktop\ETL API\BI_COMETA\src\api_cometa.py" root@72.61.62.17:/home/jefferson_pwr/BI_COMETA/src/api_cometa.py
+
+
+============================================
+PASSO 2: Na VPS, adicione ao .env
+============================================
+
+echo "VALEFISH_API_EMAIL=patricionogueira@valemilk.com.br" >> /home/jefferson_pwr/BI_COMETA/.env
+
+echo "VALEFISH_API_PASSWORD=tR6{80#d,=Ku" >> /home/jefferson_pwr/BI_COMETA/.env
+
+
+============================================
+PASSO 3: Na VPS, rebuild containers
+============================================
+
+cd /home/jefferson_pwr/BI_COMETA && docker-compose -f docker/docker-compose.yml build --no-cache && docker-compose -f docker/docker-compose.yml up -d
+
+
+============================================
+PASSO 4: Na VPS, verificar logs
+============================================
+
+docker logs bi_cometa_etl -f --tail 30
