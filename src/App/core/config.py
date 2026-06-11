@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="Logging level")
 
     # ETL Schedule
-    etl_interval_minutes: int = Field(default=5, ge=1, le=1440, description="ETL interval in minutes")
+    etl_interval_minutes: int = Field(default=480, ge=1, le=1440, description="ETL interval in minutes (480 = 3x/day)")
 
     # InfoMarket API
     infomarket_email: str = Field(default="", description="InfoMarket API email")

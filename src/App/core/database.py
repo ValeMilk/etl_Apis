@@ -502,6 +502,17 @@ class DatabaseClient:
 
         return rows, (min_date, max_date)  # type: ignore[return-value]
 
+    def get_last_infomarket_date(self) -> Optional[date]:
+        """Retorna a data mais recente sincronizada (MAX validity_finish_date)."""
+        stmt = select(self.infomarket.c.validity_finish_date).order_by(
+            self.infomarket.c.validity_finish_date.desc()
+        ).limit(1)
+        
+        with self.engine.connect() as conn:
+            result = conn.execute(stmt).scalar()
+        
+        return result
+
     @staticmethod
     def _parse_infomarket_date(value) -> Optional[date]:
         """Converte YYYYMMDD (int ou str) para date. Retorna None se inválido."""

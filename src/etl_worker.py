@@ -122,8 +122,21 @@ def run_etl_job():
                 )
                 logger.info("InfomarketClient initialized")
 
-                hoje = datetime.now()
-                start_date = hoje - timedelta(days=settings.infomarket_lookback_days)
+                hoje = datetime.now().date()
+                
+                # Tenta puxar incremental: última data sincronizada + 1 dia
+                last_sync_date = db_client.get_last_infomarket_date()
+                if last_sync_date:
+                    # Incremental: puxar desde o dia após última sincronização
+                    # ETL roda 3x ao dia (a cada 8h), capturando atualizações frequentes
+                    start_date = last_sync_date
+                    logger.info("Incremental mode: last sync was %s, starting from %s", 
+                               last_sync_date, start_date)
+                else:
+                    # Bootstrap mode: se tabela vazia, puxar últimos 90 dias
+                    start_date = hoje - timedelta(days=settings.infomarket_lookback_days)
+                    logger.info("Bootstrap mode: pulling last %d days", settings.infomarket_lookback_days)
+                
                 finish_date = hoje + timedelta(days=settings.infomarket_lookahead_days)
 
                 logger.info(
