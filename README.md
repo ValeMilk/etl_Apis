@@ -417,3 +417,5 @@ Mais detalhes: Ver [QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md)
 | **[DEFENSIVE_REFACTOR.md](docs/DEFENSIVE_REFACTOR.md)** | Deep dive na lógica defensiva com exemplos |
 | **[MONITORING_GUIDE.md](docs/MONITORING_GUIDE.md)** | Monitoramento avançado e diagnóstico |
 | **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Arquitetura técnica completa, fluxos, modelos |
+#   C I / C D   T e s t   0 6 / 1 1 / 2 0 2 6   1 5 : 4 6 : 1 1  
+ 
