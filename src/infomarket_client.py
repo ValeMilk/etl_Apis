@@ -48,8 +48,11 @@ class InfomarketClient:
         url = f"{self.BASE_URL}/api/users/login"
         resp = requests.post(
             url,
-            headers={"Content-Type": "application/json"},
-            json={"email": self.email, "password": self.password},
+            headers={
+                "Content-Type": "application/json",
+                "email": self.email,
+                "password": self.password,
+            },
             timeout=self.timeout,
             verify=False,
         )
