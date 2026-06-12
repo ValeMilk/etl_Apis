@@ -47,26 +47,13 @@ class InfomarketClient:
         """Faz login e armazena token."""
         url = f"{self.BASE_URL}/api/users/login"
         
-        # Debug: mostra exatamente o que está sendo enviado
-        self.logger.info(f"DEBUG: Enviando POST para {url}")
-        self.logger.info(f"DEBUG: Email header: {self.email}")
-        self.logger.info(f"DEBUG: Password length: {len(self.password)}")
-        
         resp = requests.post(
             url,
-            headers={
-                "Content-Type": "application/json",
-                "email": self.email,
-                "password": self.password,
-            },
+            headers={"Content-Type": "application/json"},
+            json={"email": self.email, "password": self.password},
             timeout=self.timeout,
             verify=False,
         )
-        
-        self.logger.info(f"DEBUG: Status code: {resp.status_code}")
-        self.logger.info(f"DEBUG: Response headers: {resp.headers}")
-        self.logger.info(f"DEBUG: Response body: {resp.text[:500]}")
-        
         resp.raise_for_status()
         data = resp.json()
 
