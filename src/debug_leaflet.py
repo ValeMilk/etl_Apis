@@ -2,6 +2,7 @@
 import logging
 import json
 from datetime import datetime, timedelta
+from sqlalchemy import text
 from App.core.config import Settings
 from infomarket_client import InfomarketClient
 from App.core.database import DatabaseClient
@@ -20,8 +21,8 @@ client = InfomarketClient(
 )
 db = DatabaseClient(db_url=settings.db_url)
 
-# Buscar dados de 7 dias atrás
-start_date = datetime.utcnow().date() - timedelta(days=7)
+# Buscar dados de 90 dias atrás (mesmo range do bootstrap)
+start_date = datetime.utcnow().date() - timedelta(days=90)
 finish_date = datetime.utcnow().date()
 
 logger.info(f"Fetching InfoMarket data from {start_date} to {finish_date}...")
@@ -51,8 +52,8 @@ else:
 # Também verifica no banco de dados
 logger.info(f"\n=== Checking database ===")
 with db.engine.connect() as conn:
-    query = f"SELECT leaflet_id, store_cnpj, store_name FROM infomarket WHERE leaflet_id = '{target_leaflet}' LIMIT 5;"
-    result = conn.execute(query)
+    query = text("SELECT leaflet_id, store_cnpj, store_name FROM infomarket WHERE leaflet_id = :leaflet_id LIMIT 5;")
+    result = conn.execute(query, {"leaflet_id": target_leaflet})
     db_records = result.fetchall()
     if db_records:
         logger.info(f"Found in database: {len(db_records)} records")
