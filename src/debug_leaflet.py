@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 settings = Settings()
 client = InfomarketClient(
-    email=settings.infomarket_email.get_secret_value(),
+    email=settings.infomarket_email,
     password=settings.infomarket_password.get_secret_value(),
     timeout=settings.request_timeout
 )
