@@ -18,7 +18,7 @@ client = InfomarketClient(
     password=settings.infomarket_password,
     timeout=settings.request_timeout
 )
-db = DatabaseClient(db_url=settings.database_url)
+db = DatabaseClient(db_url=settings.db_url)
 
 # Buscar dados de 7 dias atrás
 start_date = datetime.utcnow().date() - timedelta(days=7)
