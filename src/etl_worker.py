@@ -44,15 +44,15 @@ signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
 
-def run_etl_job():
-    """Executa job completo de ETL (vendas + estoque)."""
+def run_vendas_estoque_job():
+    """Executa job de Vendas + Estoque (ValeMilk + ValeFish) - 1x por dia."""
     if shutdown_requested:
         logger.info("Shutdown requested, skipping job execution")
         return
 
     job_start = datetime.now()
     logger.info("=" * 80)
-    logger.info("ETL Job Started at %s", job_start.isoformat())
+    logger.info("VENDAS+ESTOQUE Job Started at %s", job_start.isoformat())
     logger.info("=" * 80)
 
     try:
@@ -111,6 +111,36 @@ def run_etl_job():
         else:
             logger.info("ValeFish credentials not configured, skipping")
 
+        job_end = datetime.now()
+        duration = (job_end - job_start).total_seconds()
+        logger.info("=" * 80)
+        logger.info("VENDAS+ESTOQUE Job Completed at %s (duration: %.2f seconds)", job_end.isoformat(), duration)
+        logger.info("=" * 80)
+
+    except Exception:
+        logger.exception("VENDAS+ESTOQUE Job failed with exception")
+        job_end = datetime.now()
+        duration = (job_end - job_start).total_seconds()
+        logger.error("VENDAS+ESTOQUE Job Failed at %s (duration: %.2f seconds)", job_end.isoformat(), duration)
+
+
+def run_infomarket_job():
+    """Executa job de InfoMarket (encartes/preços) - 3x por dia."""
+    if shutdown_requested:
+        logger.info("Shutdown requested, skipping job execution")
+        return
+
+    job_start = datetime.now()
+    logger.info("=" * 80)
+    logger.info("INFOMARKET Job Started at %s", job_start.isoformat())
+    logger.info("=" * 80)
+
+    try:
+        db_client = DatabaseClient(
+            db_url=settings.db_url, 
+            echo=settings.database_echo
+        )
+
         # ── InfoMarket (encartes/preços) ──
         if settings.infomarket_email:
             from datetime import timedelta
@@ -157,37 +187,48 @@ def run_etl_job():
         job_end = datetime.now()
         duration = (job_end - job_start).total_seconds()
         logger.info("=" * 80)
-        logger.info("ETL Job Completed at %s (duration: %.2f seconds)", job_end.isoformat(), duration)
+        logger.info("INFOMARKET Job Completed at %s (duration: %.2f seconds)", job_end.isoformat(), duration)
         logger.info("=" * 80)
 
     except Exception:
-        logger.exception("ETL Job failed with exception")
+        logger.exception("INFOMARKET Job failed with exception")
         job_end = datetime.now()
         duration = (job_end - job_start).total_seconds()
-        logger.error("ETL Job Failed at %s (duration: %.2f seconds)", job_end.isoformat(), duration)
+        logger.error("INFOMARKET Job Failed at %s (duration: %.2f seconds)", job_end.isoformat(), duration)
 
 
 def main():
     """Entry point do ETL Worker."""
     logger.info("ETL Worker Starting...")
-    logger.info("Configuration loaded: interval=%d minutes", settings.etl_interval_minutes)
-    logger.info("Environment: %s", settings.app_environment)
+    logger.info("Configuration loaded")
+    logger.info("Environment: %s", settings.app_environment if hasattr(settings, 'app_environment') else 'production')
 
     # Configura scheduler com BlockingScheduler (para processos standalone)
     scheduler = BlockingScheduler()
 
-    # Agenda job a cada X minutos
+    # JOB 1: Vendas + Estoque (ValeMilk + ValeFish) - 1x por dia às 02:00
     scheduler.add_job(
-        run_etl_job,
-        "interval",
-        minutes=settings.etl_interval_minutes,
-        id="etl_job",
-        name="ETL Job (ValeMilk + ValeFish)",
-        next_run_time=datetime.now(),  # Executa imediatamente no startup
+        run_vendas_estoque_job,
+        "cron",
+        hour=2,
+        minute=0,
+        id="vendas_estoque_job",
+        name="Vendas + Estoque (ValeMilk + ValeFish) - Diário",
     )
 
-    logger.info("Scheduler configured with %d job(s)", len(scheduler.get_jobs()))
-    logger.info("Next ETL run scheduled for: %s", scheduler.get_jobs()[0].next_run_time)
+    # JOB 2: InfoMarket (encartes/preços) - 3x por dia (08h, 16h, 00h)
+    scheduler.add_job(
+        run_infomarket_job,
+        "cron",
+        hour="0,8,16",
+        minute=0,
+        id="infomarket_job",
+        name="InfoMarket - 3x ao dia",
+    )
+
+    logger.info("Scheduler configured with %d job(s):", len(scheduler.get_jobs()))
+    for job in scheduler.get_jobs():
+        logger.info("  - %s | Next run: %s", job.name, job.next_run_time)
 
     try:
         logger.info("Starting scheduler (blocking mode)...")
