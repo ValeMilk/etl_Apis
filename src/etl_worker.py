@@ -228,7 +228,7 @@ def main():
 
     logger.info("Scheduler configured with %d job(s):", len(scheduler.get_jobs()))
     for job in scheduler.get_jobs():
-        logger.info("  - %s | Next run: %s", job.name, job.next_run_time)
+        logger.info("  - %s", job.name)
 
     try:
         logger.info("Starting scheduler (blocking mode)...")
