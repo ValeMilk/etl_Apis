@@ -14,7 +14,7 @@ cometa = CometaClient(
     base_url=settings.api_base_url,
     email=settings.api_email,
     password=settings.api_password.get_secret_value(),
-    timeout=60,
+    timeout=120,
     verify_ssl=settings.verify_ssl,
 )
 
