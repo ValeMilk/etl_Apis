@@ -34,13 +34,18 @@ def bootstrap_vendas(brand: str, cometa_client: CometaClient, db_client: Databas
     logger.info("=" * 80)
     
     try:
+        # Determina qual tabela usar
+        if brand.lower() == 'valemilk':
+            table = db_client.vendas
+            upsert_fn = db_client.upsert_vendas
+        else:  # valefish
+            table = db_client.vendas_valefish
+            upsert_fn = db_client.upsert_vendas_valefish
+        
         # Step 1: Deletar todos os registros existentes
         logger.info(f"[{brand}] Step 1: Deletando todos os registros de vendas...")
         with db_client.get_session() as session:
-            if brand.lower() == 'valemilk':
-                delete_stmt = delete(db_client.vendas).where(db_client.vendas.c.target == 'valemilk')
-            else:  # valefish
-                delete_stmt = delete(db_client.vendas).where(db_client.vendas.c.target == 'valefish')
+            delete_stmt = delete(table)
             result = session.execute(delete_stmt)
             deleted = result.rowcount or 0
         logger.info(f"[{brand}] Deletados {deleted} registros de vendas")
@@ -97,12 +102,8 @@ def bootstrap_vendas(brand: str, cometa_client: CometaClient, db_client: Databas
             logger.warning(f"[{brand}] Nenhum registro foi puxado!")
             return
         
-        if brand.lower() == 'valemilk':
-            deleted, inserted = db_client.upsert_vendas(todas_vendas)
-            logger.info(f"[{brand}] Resultado: Deleted={deleted}, Inserted={inserted}")
-        else:  # valefish
-            deleted, inserted = db_client.upsert_vendas_valefish(todas_vendas)
-            logger.info(f"[{brand}] Resultado: Deleted={deleted}, Inserted={inserted}")
+        deleted, inserted = upsert_fn(todas_vendas)
+        logger.info(f"[{brand}] Resultado: Deleted={deleted}, Inserted={inserted}")
         
         logger.info(f"[{brand}] ✅ Bootstrap completo finalizado!")
         
