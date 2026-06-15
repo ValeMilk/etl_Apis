@@ -79,7 +79,7 @@ with db.engine.connect() as conn:
         SELECT 
             COUNT(*) as total,
             MIN(validity_start_date) as primeira_data,
-            MAX(validity_end_date) as ultima_data,
+            MAX(validity_finish_date) as ultima_data,
             MAX(created_at) as ultima_sync,
             COUNT(DISTINCT store_cnpj) as num_lojas
         FROM infomarket
