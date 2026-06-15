@@ -26,21 +26,27 @@ def bootstrap_vendas(brand: str, cometa_client: CometaClient, db_client: Databas
     """
     Bootstrap completo de vendas para uma marca:
     1. Deleta todos os registros existentes
-    2. Repuxa desde 02/11/2022 até ontem
+    2. Repuxa desde data de início específica de cada marca até ontem
     3. Insere tudo no banco
+    
+    Datas de início:
+    - ValeMilk: 02/11/2022 (primeira venda)
+    - ValeFish: 13/02/2026 (primeira venda)
     """
     logger.info("=" * 80)
     logger.info(f"BOOTSTRAP COMPLETO DE VENDAS [{brand.upper()}]")
     logger.info("=" * 80)
     
     try:
-        # Determina qual tabela usar
+        # Determina qual tabela usar e data de início
         if brand.lower() == 'valemilk':
             table = db_client.vendas
             upsert_fn = db_client.upsert_vendas
+            inicio = datetime(2022, 11, 2)  # Primeira venda ValeMilk: 02/11/2022
         else:  # valefish
             table = db_client.vendas_valefish
             upsert_fn = db_client.upsert_vendas_valefish
+            inicio = datetime(2026, 2, 13)  # Primeira venda ValeFish: 13/02/2026
         
         # Step 1: Deletar todos os registros existentes
         logger.info(f"[{brand}] Step 1: Deletando todos os registros de vendas...")
@@ -51,10 +57,8 @@ def bootstrap_vendas(brand: str, cometa_client: CometaClient, db_client: Databas
         logger.info(f"[{brand}] Deletados {deleted} registros de vendas")
         
         # Step 2: Definir período de sincronização
-        # Começando de 02/11/2022 (data fixa) até ontem
         hoje = datetime.now()
         fim = hoje - timedelta(days=1)  # API tem dados até ontem
-        inicio = datetime(2022, 11, 2)  # Data fixa de início: 02/11/2022
         
         logger.info(f"[{brand}] Step 2: Puxando vendas de {inicio.date()} até {fim.date()} (~{(fim - inicio).days} dias)")
         
