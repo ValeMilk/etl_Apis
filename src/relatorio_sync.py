@@ -20,7 +20,7 @@ with db.engine.connect() as conn:
             COUNT(*) as total,
             MAX(data) as ultima_venda,
             MAX(created_at) as ultima_sync
-        FROM vendas_valemilk
+        FROM vendas
     """))
     row = result.fetchone()
     print(f"   Total: {row[0]:,} registros")
@@ -33,9 +33,9 @@ with db.engine.connect() as conn:
     result = conn.execute(text("""
         SELECT 
             COUNT(*) as total,
-            MAX(created_at) as ultima_sync,
-            COUNT(DISTINCT loja) as num_lojas
-        FROM estoque_valemilk
+            MAX(snapshot_ts) as ultima_sync,
+            COUNT(DISTINCT loja_id) as num_lojas
+        FROM estoque
     """))
     row = result.fetchone()
     print(f"   Total: {row[0]:,} registros")
@@ -63,8 +63,8 @@ with db.engine.connect() as conn:
     result = conn.execute(text("""
         SELECT 
             COUNT(*) as total,
-            MAX(created_at) as ultima_sync,
-            COUNT(DISTINCT loja) as num_lojas
+            MAX(snapshot_ts) as ultima_sync,
+            COUNT(DISTINCT loja_id) as num_lojas
         FROM estoque_valefish
     """))
     row = result.fetchone()
@@ -99,15 +99,15 @@ print(f"⏱️  Intervalo configurado: {settings.etl_interval_minutes} minutos")
 with db.engine.connect() as conn:
     # Pegar registro mais recente de qualquer tabela
     result = conn.execute(text("""
-        SELECT MAX(created_at) as last_etl
+        SELECT MAX(last_update) as last_etl
         FROM (
-            SELECT MAX(created_at) as created_at FROM vendas_valemilk
+            SELECT MAX(created_at) as last_update FROM vendas
             UNION ALL
-            SELECT MAX(created_at) FROM estoque_valemilk
+            SELECT MAX(snapshot_ts) FROM estoque
             UNION ALL
             SELECT MAX(created_at) FROM vendas_valefish
             UNION ALL
-            SELECT MAX(created_at) FROM estoque_valefish
+            SELECT MAX(snapshot_ts) FROM estoque_valefish
             UNION ALL
             SELECT MAX(created_at) FROM infomarket
         ) combined
