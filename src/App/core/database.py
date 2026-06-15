@@ -503,7 +503,12 @@ class DatabaseClient:
         return rows, (min_date, max_date)  # type: ignore[return-value]
 
     def get_last_infomarket_date(self) -> Optional[date]:
-        """Retorna a data mais recente sincronizada (MAX validity_finish_date)."""
+        """
+        Retorna a data mais recente sincronizada.
+        
+        ATENÇÃO: Este método retorna MAX(validity_finish_date), não validity_start_date.
+        Para sincronização incremental, prefira usar janela fixa (ex: hoje - 7 dias).
+        """
         stmt = select(self.infomarket.c.validity_finish_date).order_by(
             self.infomarket.c.validity_finish_date.desc()
         ).limit(1)

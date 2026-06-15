@@ -154,20 +154,16 @@ def run_infomarket_job():
 
                 hoje = datetime.now().date()
                 
-                # Tenta puxar incremental: última data sincronizada + 1 dia
-                last_sync_date = db_client.get_last_infomarket_date()
-                if last_sync_date:
-                    # Incremental: puxar desde o dia após última sincronização
-                    # ETL roda 3x ao dia (a cada 8h), capturando atualizações frequentes
-                    start_date = last_sync_date
-                    logger.info("Incremental mode: last sync was %s, starting from %s", 
-                               last_sync_date, start_date)
-                else:
-                    # Bootstrap mode: se tabela vazia, puxar últimos 90 dias
-                    start_date = hoje - timedelta(days=settings.infomarket_lookback_days)
-                    logger.info("Bootstrap mode: pulling last %d days", settings.infomarket_lookback_days)
-                
+                # Sempre puxar desde 7 dias atrás até lookahead dias à frente
+                # Isso garante captura de:
+                # 1. Encartes que começam hoje
+                # 2. Atualizações de encartes recentes
+                # 3. Novos encartes futuros
+                start_date = hoje - timedelta(days=7)  # Lookback de 7 dias
                 finish_date = hoje + timedelta(days=settings.infomarket_lookahead_days)
+                
+                logger.info("InfoMarket sync mode: %s → %s (7 dias lookback + %d dias lookahead)", 
+                           start_date, finish_date, settings.infomarket_lookahead_days)
 
                 logger.info(
                     "Starting InfoMarket processing (%s → %s)...",
