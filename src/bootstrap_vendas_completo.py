@@ -26,7 +26,7 @@ def bootstrap_vendas(brand: str, cometa_client: CometaClient, db_client: Databas
     """
     Bootstrap completo de vendas para uma marca:
     1. Deleta todos os registros existentes
-    2. Repuxa desde a data mais antiga (API permite ~180 dias para trás)
+    2. Repuxa desde 02/11/2022 até ontem
     3. Insere tudo no banco
     """
     logger.info("=" * 80)
@@ -51,17 +51,17 @@ def bootstrap_vendas(brand: str, cometa_client: CometaClient, db_client: Databas
         logger.info(f"[{brand}] Deletados {deleted} registros de vendas")
         
         # Step 2: Definir período de sincronização
-        # API Cometa permite puxar até ~180 dias para trás
+        # Começando de 02/11/2022 (data fixa) até ontem
         hoje = datetime.now()
         fim = hoje - timedelta(days=1)  # API tem dados até ontem
-        inicio = fim - timedelta(days=180)  # 180 dias para trás
+        inicio = datetime(2022, 11, 2)  # Data fixa de início: 02/11/2022
         
-        logger.info(f"[{brand}] Step 2: Puxando vendas de {inicio.date()} até {fim.date()} (180 dias)")
+        logger.info(f"[{brand}] Step 2: Puxando vendas de {inicio.date()} até {fim.date()} (~{(fim - inicio).days} dias)")
         
-        # Step 3: Puxar dados por período (vamos fazer em chunks de 30 dias para evitar timeout)
+        # Step 3: Puxar dados por período (chunks de 60 dias para evitar timeout e acelerar)
         todas_vendas = []
         current_start = inicio
-        chunk_size = 30  # dias
+        chunk_size = 60  # dias
         
         while current_start < fim:
             current_end = min(current_start + timedelta(days=chunk_size), fim)
