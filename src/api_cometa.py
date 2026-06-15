@@ -91,75 +91,103 @@ class CometaClient:
         - Valida resposta da API
         - Extrai estrutura de estoque (se aninhada em dict)
         - Retorna lista vazia se erro ou formato inválido
+        - Retry automático até 10 vezes com backoff exponencial
         """
         headers = self._get_headers()
         if not headers:
             return []
 
-        try:
-            response = requests.get(
-                f"{self.base_url}/estoque",
-                headers=headers,
-                verify=self.verify_ssl,
-                timeout=self.timeout,
-            )
-            if response.status_code == 200:
-                dados = response.json()
-                
-                # Sanitização: validação básica de resposta
-                if dados is None:
-                    self.logger.warning("Estoque response is None, returning empty list")
-                    return []
-                
-                # Extração de estrutura (se aninhada)
-                estoque_list: List[dict] = []
-                if isinstance(dados, list):
-                    estoque_list = dados
-                elif isinstance(dados, dict):
-                    # Tenta chaves comuns
-                    for key in ("ESTOQUE", "estoque", "data", "DATA", "items", "ITEMS"):
-                        if key in dados and isinstance(dados[key], list):
-                            estoque_list = dados[key]
-                            break
+        # Retry logic: tenta até 10 vezes com backoff exponencial
+        max_retries = 10
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                response = requests.get(
+                    f"{self.base_url}/estoque",
+                    headers=headers,
+                    verify=self.verify_ssl,
+                    timeout=self.timeout,
+                )
+                if response.status_code == 200:
+                    dados = response.json()
                     
-                    if not estoque_list:
+                    # Sanitização: validação básica de resposta
+                    if dados is None:
+                        self.logger.warning("Estoque response is None, returning empty list")
+                        return []
+                    
+                    # Extração de estrutura (se aninhada)
+                    estoque_list: List[dict] = []
+                    if isinstance(dados, list):
+                        estoque_list = dados
+                    elif isinstance(dados, dict):
+                        # Tenta chaves comuns
+                        for key in ("ESTOQUE", "estoque", "data", "DATA", "items", "ITEMS"):
+                            if key in dados and isinstance(dados[key], list):
+                                estoque_list = dados[key]
+                                break
+                        
+                        if not estoque_list:
+                            self.logger.warning(
+                                "Estoque response is dict without expected list key. Keys: %s",
+                                list(dados.keys())[:10]
+                            )
+                            return []
+                    else:
                         self.logger.warning(
-                            "Estoque response is dict without expected list key. Keys: %s",
-                            list(dados.keys())[:10]
+                            "Estoque response has unexpected type: %s. Expected list or dict",
+                            type(dados).__name__
                         )
                         return []
-                else:
-                    self.logger.warning(
-                        "Estoque response has unexpected type: %s. Expected list or dict",
-                        type(dados).__name__
-                    )
-                    return []
+                    
+                    # Desplanicar/padronizar dados - SUCESSO!
+                    return flatten_estoque(estoque_list)
                 
-                # Desplanicar/padronizar dados
-                return flatten_estoque(estoque_list)
-            
-            if response.status_code == 401:
-                self.logger.warning("Estoque request got 401, refreshing token and retrying")
-                self._force_refresh_token()
-                headers = self._get_headers()
-                if headers:
-                    retry = requests.get(
-                        f"{self.base_url}/estoque",
-                        headers=headers,
-                        verify=self.verify_ssl,
-                        timeout=self.timeout,
+                elif response.status_code == 401:
+                    self.logger.warning("Estoque request got 401, refreshing token and retrying")
+                    self._force_refresh_token()
+                    headers = self._get_headers()
+                    if headers:
+                        retry = requests.get(
+                            f"{self.base_url}/estoque",
+                            headers=headers,
+                            verify=self.verify_ssl,
+                            timeout=self.timeout,
+                        )
+                        if retry.status_code == 200:
+                            dados = retry.json()
+                            if isinstance(dados, list):
+                                return flatten_estoque(dados)
+                    # Se falhou após refresh, continua para retry
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        wait_time = min(2 ** retry_count, 30)
+                        self.logger.info(f"⏳ Aguardando {wait_time}s antes de tentar novamente...")
+                        time.sleep(wait_time)
+                else:
+                    retry_count += 1
+                    self.logger.warning(
+                        "Estoque request failed: status_code=%s (tentativa %d/%d)",
+                        response.status_code, retry_count, max_retries
                     )
-                    if retry.status_code == 200:
-                        dados = retry.json()
-                        if isinstance(dados, list):
-                            return flatten_estoque(dados)
-                self.logger.error("Estoque request failed after token refresh")
-                return []
-
-            self.logger.error("Estoque request failed: status_code=%s", response.status_code)
-        except Exception:
-            self.logger.exception("Estoque request failed")
+                    if retry_count < max_retries:
+                        wait_time = min(2 ** retry_count, 30)
+                        self.logger.info(f"⏳ Aguardando {wait_time}s antes de tentar novamente...")
+                        time.sleep(wait_time)
+                        
+            except Exception as e:
+                retry_count += 1
+                self.logger.warning(
+                    "Estoque request failed (tentativa %d/%d): %s",
+                    retry_count, max_retries, str(e)
+                )
+                if retry_count < max_retries:
+                    wait_time = min(2 ** retry_count, 30)
+                    self.logger.info(f"⏳ Aguardando {wait_time}s antes de tentar novamente...")
+                    time.sleep(wait_time)
         
+        self.logger.error(f"❌ Falha permanente ao buscar estoque após {max_retries} tentativas")
         return []
 
     def list_lojas(self) -> List[int]:
