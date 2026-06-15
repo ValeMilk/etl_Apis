@@ -1,5 +1,6 @@
 import calendar
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -209,60 +210,83 @@ class CometaClient:
                 "dataFinal": intervalo_fim.strftime("%d-%m-%Y"),
             }
 
-            try:
-                res = requests.get(
-                    url_venda,
-                    headers=headers,
-                    params=params,
-                    verify=self.verify_ssl,
-                    timeout=self.timeout,
-                )
-                
-                if res.status_code == 200:
-                    dados = res.json()
+            # Retry logic: tenta até 10 vezes com backoff exponencial
+            max_retries = 10
+            retry_count = 0
+            success = False
+            
+            while not success and retry_count < max_retries:
+                try:
+                    res = requests.get(
+                        url_venda,
+                        headers=headers,
+                        params=params,
+                        verify=self.verify_ssl,
+                        timeout=self.timeout,
+                    )
                     
-                    # Sanitização: validação básica antes de adicionar
-                    if dados is None:
-                        self.logger.debug(
-                            "Vendas response for loja=%s, period=%s-%s is None, skipping",
-                            loja_id, data_atual.date(), intervalo_fim.date()
+                    if res.status_code == 200:
+                        dados = res.json()
+                        
+                        # Sanitização: validação básica antes de adicionar
+                        if dados is None:
+                            self.logger.debug(
+                                "Vendas response for loja=%s, period=%s-%s is None, skipping",
+                                loja_id, data_atual.date(), intervalo_fim.date()
+                            )
+                        elif isinstance(dados, (dict, list)):
+                            vendas_brutos.append(dados)
+                        else:
+                            self.logger.warning(
+                                "Vendas response for loja=%s has unexpected type: %s. Expected dict or list",
+                                loja_id, type(dados).__name__
+                            )
+                        success = True  # Sucesso! Sai do loop
+                    elif res.status_code == 401:
+                        self.logger.warning(
+                            "Vendas request for loja=%s got 401, refreshing token and retrying",
+                            loja_id
                         )
-                    elif isinstance(dados, (dict, list)):
-                        vendas_brutos.append(dados)
+                        self._force_refresh_token()
+                        headers = self._get_headers()
+                        if headers:
+                            retry = requests.get(
+                                url_venda,
+                                headers=headers,
+                                params=params,
+                                verify=self.verify_ssl,
+                                timeout=self.timeout,
+                            )
+                            if retry.status_code == 200:
+                                dados = retry.json()
+                                if isinstance(dados, (dict, list)):
+                                    vendas_brutos.append(dados)
+                                success = True
                     else:
                         self.logger.warning(
-                            "Vendas response for loja=%s has unexpected type: %s. Expected dict or list",
-                            loja_id, type(dados).__name__
+                            "Vendas request for loja=%s failed: status_code=%s (tentativa %d/%d)",
+                            loja_id, res.status_code, retry_count + 1, max_retries
                         )
-                elif res.status_code == 401:
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            wait_time = min(2 ** retry_count, 30)
+                            self.logger.info(f"⏳ Aguardando {wait_time}s antes de tentar novamente...")
+                            time.sleep(wait_time)
+                except Exception as e:
+                    retry_count += 1
                     self.logger.warning(
-                        "Vendas request for loja=%s got 401, refreshing token and retrying",
-                        loja_id
+                        "Vendas request failed for loja=%s, period=%s-%s (tentativa %d/%d): %s",
+                        loja_id, data_atual.date(), intervalo_fim.date(), retry_count, max_retries, str(e)
                     )
-                    self._force_refresh_token()
-                    headers = self._get_headers()
-                    if headers:
-                        retry = requests.get(
-                            url_venda,
-                            headers=headers,
-                            params=params,
-                            verify=self.verify_ssl,
-                            timeout=self.timeout,
+                    if retry_count < max_retries:
+                        wait_time = min(2 ** retry_count, 30)
+                        self.logger.info(f"⏳ Aguardando {wait_time}s antes de tentar novamente...")
+                        time.sleep(wait_time)
+                    else:
+                        self.logger.error(
+                            "❌ Falha permanente após %d tentativas para loja=%s período %s-%s",
+                            max_retries, loja_id, data_atual.date(), intervalo_fim.date()
                         )
-                        if retry.status_code == 200:
-                            dados = retry.json()
-                            if isinstance(dados, (dict, list)):
-                                vendas_brutos.append(dados)
-                else:
-                    self.logger.warning(
-                        "Vendas request for loja=%s failed: status_code=%s",
-                        loja_id, res.status_code
-                    )
-            except Exception:
-                self.logger.exception(
-                    "Vendas request failed for loja=%s, period=%s-%s",
-                    loja_id, data_atual.date(), intervalo_fim.date()
-                )
 
             data_atual = intervalo_fim + timedelta(days=1)
 
@@ -304,47 +328,70 @@ class CometaClient:
                 "dataFinal": intervalo_fim.strftime("%d-%m-%Y"),
             }
 
-            try:
-                res = requests.get(
-                    url_venda,
-                    headers=headers,
-                    params=params,
-                    verify=self.verify_ssl,
-                    timeout=self.timeout,
-                )
-                if res.status_code == 200:
-                    dados = res.json()
-                    if isinstance(dados, list) and dados:
-                        vendas_brutos.extend(dados)  # Cada elemento é uma loja
-                    elif isinstance(dados, dict) and dados:
-                        vendas_brutos.append(dados)
-                elif res.status_code == 401:
-                    self._force_refresh_token()
-                    headers = self._get_headers()
-                    if headers:
-                        retry = requests.get(
-                            url_venda,
-                            headers=headers,
-                            params=params,
-                            verify=self.verify_ssl,
-                            timeout=self.timeout,
-                        )
-                        if retry.status_code == 200:
-                            dados = retry.json()
-                            if isinstance(dados, list) and dados:
-                                vendas_brutos.extend(dados)
-                            elif isinstance(dados, dict) and dados:
-                                vendas_brutos.append(dados)
-                else:
-                    self.logger.warning(
-                        "Vendas periodo request failed: status_code=%s period=%s-%s",
-                        res.status_code, data_atual.date(), intervalo_fim.date()
+            # Retry logic: tenta até 10 vezes com backoff exponencial
+            max_retries = 10
+            retry_count = 0
+            success = False
+            
+            while not success and retry_count < max_retries:
+                try:
+                    res = requests.get(
+                        url_venda,
+                        headers=headers,
+                        params=params,
+                        verify=self.verify_ssl,
+                        timeout=self.timeout,
                     )
-            except Exception:
-                self.logger.exception(
-                    "Vendas periodo request failed for period %s-%s",
-                    data_atual.date(), intervalo_fim.date()
-                )
+                    if res.status_code == 200:
+                        dados = res.json()
+                        if isinstance(dados, list) and dados:
+                            vendas_brutos.extend(dados)  # Cada elemento é uma loja
+                        elif isinstance(dados, dict) and dados:
+                            vendas_brutos.append(dados)
+                        success = True  # Sucesso! Sai do loop
+                    elif res.status_code == 401:
+                        self._force_refresh_token()
+                        headers = self._get_headers()
+                        if headers:
+                            retry = requests.get(
+                                url_venda,
+                                headers=headers,
+                                params=params,
+                                verify=self.verify_ssl,
+                                timeout=self.timeout,
+                            )
+                            if retry.status_code == 200:
+                                dados = retry.json()
+                                if isinstance(dados, list) and dados:
+                                    vendas_brutos.extend(dados)
+                                elif isinstance(dados, dict) and dados:
+                                    vendas_brutos.append(dados)
+                                success = True
+                    else:
+                        self.logger.warning(
+                            "Vendas periodo request failed: status_code=%s period=%s-%s (tentativa %d/%d)",
+                            res.status_code, data_atual.date(), intervalo_fim.date(), retry_count + 1, max_retries
+                        )
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            wait_time = min(2 ** retry_count, 30)  # Backoff exponencial, max 30s
+                            self.logger.info(f"⏳ Aguardando {wait_time}s antes de tentar novamente...")
+                            time.sleep(wait_time)
+                except Exception as e:
+                    retry_count += 1
+                    self.logger.warning(
+                        "Vendas periodo request failed for period %s-%s (tentativa %d/%d): %s",
+                        data_atual.date(), intervalo_fim.date(), retry_count, max_retries, str(e)
+                    )
+                    if retry_count < max_retries:
+                        wait_time = min(2 ** retry_count, 30)  # Backoff exponencial, max 30s
+                        self.logger.info(f"⏳ Aguardando {wait_time}s antes de tentar novamente...")
+                        time.sleep(wait_time)
+                    else:
+                        self.logger.error(
+                            "❌ Falha permanente após %d tentativas para período %s-%s",
+                            max_retries, data_atual.date(), intervalo_fim.date()
+                        )
 
             data_atual = intervalo_fim + timedelta(days=1)
 
