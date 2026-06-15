@@ -4,7 +4,7 @@ from App.core.database import DatabaseClient
 from App.core.config import settings
 
 try:
-    db = DatabaseClient(settings.database_url)
+    db = DatabaseClient(settings.db_url)
     
     # Validar estoque
     with db.engine.connect() as conn:
