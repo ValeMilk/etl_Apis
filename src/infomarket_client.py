@@ -128,7 +128,7 @@ class InfomarketClient:
                 break
 
             all_records.extend(records)
-            self.logger.debug("InfoMarket skip=%d → %d registros nesta página", skip, len(records))
+            self.logger.info("📄 Página skip=%d → %d registros (total acumulado: %d)", skip, len(records), len(all_records))
 
             if len(records) < self.PAGE_SIZE:
                 break
