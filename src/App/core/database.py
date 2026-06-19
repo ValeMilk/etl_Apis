@@ -123,6 +123,38 @@ class DatabaseClient:
             Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
         )
 
+        self.ativmob_estoque = Table(
+            "ativmob_estoque",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("event_id", String(50), nullable=False, unique=True),  # ID único do evento
+            Column("store_cnpj", String(20), nullable=False),
+            Column("event_code", String(50), nullable=False),
+            Column("event_title", String(255), nullable=True),
+            Column("event_dth", DateTime, nullable=False),  # Data/hora do evento
+            Column("order_number", String(100), nullable=True),
+            Column("invoice_number", String(100), nullable=True),
+            Column("codigo_orcamento", String(100), nullable=True),
+            Column("agent_code", String(50), nullable=True),
+            Column("agent_name", String(255), nullable=True),
+            Column("lat", String(50), nullable=True),
+            Column("lng", String(50), nullable=True),
+            Column("codigo_roteiro", String(100), nullable=True),
+            Column("link_rastreamento", String(500), nullable=True),
+            Column("razao_social_dest", String(500), nullable=True),
+            Column("nome_fantasia_dest", String(500), nullable=True),
+            Column("codigo_destino", String(50), nullable=True),
+            # Campos desnormalizados do form[] para facilitar queries
+            Column("produto_nome", String(500), nullable=True),
+            Column("produto_codigo", String(50), nullable=True),
+            Column("quantidade", Integer, nullable=True),
+            Column("data_validade", Date, nullable=True),
+            Column("em_ruptura", String(10), nullable=True),  # "SIM" ou "NÃO"
+            # JSON completo do form[] para auditoria
+            Column("form_json", Text, nullable=True),
+            Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
+        )
+
         self.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine, autoflush=False, autocommit=False, future=True)
 
@@ -527,3 +559,111 @@ class DatabaseClient:
             return datetime.strptime(str(int(value)), "%Y%m%d").date()
         except (ValueError, TypeError):
             return None
+
+    # ── ATIVMOB Estoque ───────────────────────────────────────────────────────
+
+    def insert_ativmob_estoque(self, events: Iterable[dict]) -> int:
+        """
+        Insere eventos de estoque ATIVMOB no banco.
+        
+        Ignora duplicados (event_id único).
+        Retorna número de registros inseridos.
+        """
+        import json
+        
+        rows = []
+        now = datetime.utcnow()
+
+        for event in events:
+            event_id = event.get("event_id")
+            if not event_id:
+                self.logger.warning("Skipping ATIVMOB event without event_id")
+                continue
+
+            # Parse event_dth "2026-06-10 07:42:01"
+            event_dth_str = event.get("event_dth")
+            try:
+                event_dth = datetime.strptime(event_dth_str, "%Y-%m-%d %H:%M:%S") if event_dth_str else None
+            except (ValueError, TypeError):
+                event_dth = None
+
+            # Extrair campos do form[] array
+            form_data = event.get("form", [])
+            produto_nome = None
+            produto_codigo = None
+            quantidade = None
+            data_validade = None
+            em_ruptura = None
+
+            for field in form_data:
+                label = field.get("label", "").lower()
+                value = field.get("value")
+                codigo = field.get("codigo")
+
+                if "produto" in label and "ruptura" not in label:
+                    produto_nome = value
+                    produto_codigo = codigo
+                elif "quantidade" in label:
+                    try:
+                        quantidade = int(value) if value else None
+                    except (ValueError, TypeError):
+                        quantidade = None
+                elif "validade" in label:
+                    # "20/06/2026" → date
+                    try:
+                        data_validade = datetime.strptime(value, "%d/%m/%Y").date() if value else None
+                    except (ValueError, TypeError):
+                        data_validade = None
+                elif "ruptura" in label:
+                    em_ruptura = value  # "SIM" ou "NÃO"
+
+            row = {
+                "event_id": str(event_id),
+                "store_cnpj": event.get("storeCNPJ"),
+                "event_code": event.get("event_code"),
+                "event_title": event.get("event_title"),
+                "event_dth": event_dth,
+                "order_number": event.get("order_number"),
+                "invoice_number": event.get("invoice_number"),
+                "codigo_orcamento": event.get("codigo_orcamento"),
+                "agent_code": event.get("agent_code"),
+                "agent_name": event.get("agent_name"),
+                "lat": event.get("lat"),
+                "lng": event.get("lng"),
+                "codigo_roteiro": event.get("codigo_roteiro"),
+                "link_rastreamento": event.get("link_rastreamento"),
+                "razao_social_dest": event.get("razao_social_dest"),
+                "nome_fantasia_dest": event.get("nome_fantasia_dest"),
+                "codigo_destino": event.get("codigo_destino"),
+                "produto_nome": produto_nome,
+                "produto_codigo": produto_codigo,
+                "quantidade": quantidade,
+                "data_validade": data_validade,
+                "em_ruptura": em_ruptura,
+                "form_json": json.dumps(form_data, ensure_ascii=False) if form_data else None,
+                "created_at": now,
+            }
+            rows.append(row)
+
+        if not rows:
+            self.logger.info("No ATIVMOB estoque rows to insert")
+            return 0
+
+        # Inserir com IGNORE (duplicados event_id são descartados)
+        inserted_count = 0
+        with self.get_session() as session:
+            for row in rows:
+                try:
+                    stmt = insert(self.ativmob_estoque).values(**row)
+                    session.execute(stmt)
+                    inserted_count += 1
+                except Exception as e:
+                    # Ignora constraint violations (event_id duplicado)
+                    if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                        self.logger.debug("Skipping duplicate event_id=%s", row.get("event_id"))
+                    else:
+                        self.logger.warning("Error inserting ATIVMOB event_id=%s: %s", row.get("event_id"), e)
+
+        self.logger.info("Inserted %d ATIVMOB estoque records (ignored %d duplicates)", 
+                         inserted_count, len(rows) - inserted_count)
+        return inserted_count

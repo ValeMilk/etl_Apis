@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     infomarket_lookback_days: int = Field(default=90, ge=0, description="Dias para lookback InfoMarket")
     infomarket_lookahead_days: int = Field(default=60, ge=1, description="Dias para lookahead InfoMarket")
 
+    # ATIVMOB API
+    ativmob_api_key: str = Field(default="", description="ATIVMOB X-API-Key")
+    ativmob_store_cnpj: str = Field(default="", description="ATIVMOB storeCNPJ")
+
     # FastAPI
     app_title: str = Field(default="BI_COMETA", description="API title")
     app_version: str = Field(default="1.1.0", description="API version")

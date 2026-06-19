@@ -193,6 +193,72 @@ def run_infomarket_job():
         logger.error("INFOMARKET Job Failed at %s (duration: %.2f seconds)", job_end.isoformat(), duration)
 
 
+def run_ativmob_job():
+    """Executa job de ATIVMOB Estoque - 3x por dia."""
+    if shutdown_requested:
+        logger.info("Shutdown requested, skipping job execution")
+        return
+
+    job_start = datetime.now()
+    logger.info("=" * 80)
+    logger.info("ATIVMOB Job Started at %s", job_start.isoformat())
+    logger.info("=" * 80)
+
+    try:
+        # Importa aqui para evitar erro se não configurado
+        from ativmob_client import AtivmobClient
+
+        # Verifica se credenciais ATIVMOB estão configuradas
+        if hasattr(settings, 'ativmob_api_key') and hasattr(settings, 'ativmob_store_cnpj'):
+            try:
+                db_client = DatabaseClient(db_url=settings.db_url, echo=False)
+                ativmob_client = AtivmobClient(
+                    api_key=settings.ativmob_api_key,
+                    store_cnpj=settings.ativmob_store_cnpj,
+                    timeout=settings.request_timeout,
+                )
+
+                # Step 1: Buscar eventos novos
+                logger.info("Buscando eventos ATIVMOB (event_code=estoque)...")
+                response = ativmob_client.get_events(event_code="estoque")
+                events = response.get("events", [])
+
+                if events:
+                    logger.info("Recebidos %d eventos ATIVMOB", len(events))
+
+                    # Step 2: Inserir no banco
+                    inserted_count = db_client.insert_ativmob_estoque(events)
+                    logger.info("Inseridos %d novos eventos no banco", inserted_count)
+
+                    # Step 3: Enviar ACK para API (marca como processados)
+                    event_ids = [e.get("event_id") for e in events if e.get("event_id")]
+                    if event_ids:
+                        ack_success = ativmob_client.ack_events(event_ids)
+                        if ack_success:
+                            logger.info("✅ ACK enviado com sucesso para %d eventos", len(event_ids))
+                        else:
+                            logger.warning("⚠️ Falha ao enviar ACK, eventos podem retornar na próxima execução")
+                else:
+                    logger.info("Nenhum evento novo ATIVMOB (já processados ou sem eventos)")
+
+            except Exception as e:
+                logger.warning("ATIVMOB skipped due to error: %s", e, exc_info=True)
+        else:
+            logger.info("ATIVMOB credentials not configured, skipping")
+
+        job_end = datetime.now()
+        duration = (job_end - job_start).total_seconds()
+        logger.info("=" * 80)
+        logger.info("ATIVMOB Job Completed at %s (duration: %.2f seconds)", job_end.isoformat(), duration)
+        logger.info("=" * 80)
+
+    except Exception:
+        logger.exception("ATIVMOB Job failed with exception")
+        job_end = datetime.now()
+        duration = (job_end - job_start).total_seconds()
+        logger.error("ATIVMOB Job Failed at %s (duration: %.2f seconds)", job_end.isoformat(), duration)
+
+
 def main():
     """Entry point do ETL Worker."""
     logger.info("ETL Worker Starting...")
@@ -220,6 +286,16 @@ def main():
         minute=0,
         id="infomarket_job",
         name="InfoMarket - 3x ao dia",
+    )
+
+    # JOB 3: ATIVMOB Estoque - 3x por dia (08h, 16h, 00h)
+    scheduler.add_job(
+        run_ativmob_job,
+        "cron",
+        hour="0,8,16",
+        minute=15,  # 15 minutos após InfoMarket para evitar sobrecarga
+        id="ativmob_job",
+        name="ATIVMOB Estoque - 3x ao dia",
     )
 
     logger.info("Scheduler configured with %d job(s):", len(scheduler.get_jobs()))

@@ -43,14 +43,13 @@ def main():
         )
         logger.info("✅ InfomarketClient inicializado")
         
-        # Step 1: Deletar TODOS os registros
+        # Step 1: TRUNCAR tabela (mais rápido que DELETE)
         logger.info("")
-        logger.info("Step 1: Deletando TODOS os registros de infomarket...")
+        logger.info("Step 1: TRUNCANDO tabela infomarket...")
         with db_client.get_session() as session:
-            delete_stmt = delete(db_client.infomarket)
-            result = session.execute(delete_stmt)
-            deleted_count = result.rowcount or 0
-        logger.info(f"✅ Deletados {deleted_count} registros de infomarket")
+            session.execute(text("TRUNCATE TABLE infomarket RESTART IDENTITY CASCADE"))
+            deleted_count = session.execute(text("SELECT COUNT(*) FROM infomarket")).scalar()
+        logger.info(f"✅ Tabela truncada (registros restantes: {deleted_count})")
         
         # Step 2: Puxar últimos 120 dias
         logger.info("")
@@ -65,10 +64,11 @@ def main():
         records = infomarket_client.get_prices(start_date, finish_date)
         logger.info(f"✅ API retornou {len(records)} registros")
         
-        # Step 3: Inserir no banco
+        # Step 3: Inserir no banco (usando replace_infomarket que já tem a lógica de preparação)
         if records:
             logger.info("")
             logger.info("Step 3: Inserindo registros no banco...")
+            # Como truncamos antes, replace_infomarket vai só inserir
             deleted, inserted = db_client.replace_infomarket(records)
             logger.info(f"✅ Inseridos {inserted} registros")
         else:
@@ -78,7 +78,6 @@ def main():
         logger.info("")
         logger.info("=" * 80)
         logger.info("REFRESH INFOMARKET COMPLETO")
-        logger.info(f"Deletados: {deleted_count}")
         logger.info(f"Inseridos: {inserted if records else 0}")
         logger.info("=" * 80)
         
