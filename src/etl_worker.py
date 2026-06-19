@@ -194,7 +194,12 @@ def run_infomarket_job():
 
 
 def run_ativmob_job():
-    """Executa job de ATIVMOB Estoque - 3x por dia."""
+    """
+    Executa job de ATIVMOB Estoque - 3x por dia.
+    
+    Loop até não haver mais eventos (garante que pega TODOS os eventos pendentes).
+    A API retorna até 100 eventos por chamada - se retornar 100, há mais eventos.
+    """
     if shutdown_requested:
         logger.info("Shutdown requested, skipping job execution")
         return
@@ -218,28 +223,75 @@ def run_ativmob_job():
                     timeout=settings.request_timeout,
                 )
 
-                # Step 1: Buscar eventos novos
-                logger.info("Buscando eventos ATIVMOB (event_code=estoque)...")
-                response = ativmob_client.get_events(event_code="estoque")
-                events = response.get("events", [])
+                logger.info("📌 CNPJ: %s | Event: estoque", settings.ativmob_store_cnpj)
 
-                if events:
-                    logger.info("Recebidos %d eventos ATIVMOB", len(events))
+                # ── Loop para garantir que pega TODOS os eventos ──────────────
+                total_events_fetched = 0
+                total_events_inserted = 0
+                batch_number = 0
+                max_batches = 50  # Limite de segurança (50 batches * 100 = 5000 eventos max)
+
+                logger.info("🔄 Iniciando loop de extração (até retornar < 100 eventos)...")
+
+                while batch_number < max_batches:
+                    batch_number += 1
+
+                    # Step 1: Buscar até 100 eventos
+                    logger.info("─" * 80)
+                    logger.info("📦 BATCH #%d - Buscando eventos...", batch_number)
+                    response = ativmob_client.get_events(event_code="estoque")
+                    events = response.get("events", [])
+                    max_num_events = response.get("maxNumEvents", 100)
+
+                    if not events:
+                        logger.info("✅ Nenhum evento pendente")
+                        break
+
+                    events_count = len(events)
+                    total_events_fetched += events_count
+                    logger.info("📥 Recebidos: %d eventos", events_count)
+
+                    # Log de sample de event_dth para visibilidade de período
+                    if events_count > 0:
+                        first_event_dth = events[0].get("event_dth", "N/A")
+                        last_event_dth = events[-1].get("event_dth", "N/A")
+                        logger.info("📅 Período: %s → %s", first_event_dth, last_event_dth)
 
                     # Step 2: Inserir no banco
                     inserted_count = db_client.insert_ativmob_estoque(events)
-                    logger.info("Inseridos %d novos eventos no banco", inserted_count)
+                    total_events_inserted += inserted_count
+                    logger.info("💾 Inseridos: %d eventos (ignorados %d duplicatas)", 
+                               inserted_count, events_count - inserted_count)
 
                     # Step 3: Enviar ACK para API (marca como processados)
                     event_ids = [e.get("event_id") for e in events if e.get("event_id")]
                     if event_ids:
                         ack_success = ativmob_client.ack_events(event_ids)
                         if ack_success:
-                            logger.info("✅ ACK enviado com sucesso para %d eventos", len(event_ids))
+                            logger.info("✅ ACK enviado: %d eventos marcados como processados", len(event_ids))
                         else:
-                            logger.warning("⚠️ Falha ao enviar ACK, eventos podem retornar na próxima execução")
-                else:
-                    logger.info("Nenhum evento novo ATIVMOB (já processados ou sem eventos)")
+                            logger.warning("⚠️ Falha no ACK - eventos podem retornar")
+
+                    logger.info("📊 Total acumulado: %d eventos recebidos | %d inseridos", 
+                               total_events_fetched, total_events_inserted)
+
+                    # Step 4: Verificar se há mais eventos
+                    if events_count < max_num_events:
+                        logger.info("✅ Última batch retornou %d eventos (< %d) - Sem mais eventos!", 
+                                   events_count, max_num_events)
+                        break
+
+                    logger.info("🔄 Batch retornou %d eventos = continuar para próxima batch", 
+                               max_num_events)
+
+                # ── Resumo Final ──────────────────────────────────────────────
+                logger.info("")
+                logger.info("📦 Total de batches processadas: %d", batch_number)
+                logger.info("📥 Total de eventos recebidos: %d", total_events_fetched)
+                logger.info("💾 Total de eventos inseridos: %d", total_events_inserted)
+
+                if batch_number >= max_batches:
+                    logger.warning("⚠️ Atingido limite de %d batches - pode haver mais eventos", max_batches)
 
             except Exception as e:
                 logger.warning("ATIVMOB skipped due to error: %s", e, exc_info=True)
