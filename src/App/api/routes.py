@@ -75,11 +75,20 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
     @router.get("/api/v1/infomarket/debug")
     def debug_infomarket(token: TokenDep) -> dict:
         """Debug: retorna contagens"""
+        # Contar via SQL direto
+        from sqlalchemy import text
+        query = text("SELECT COUNT(*) FROM public.infomarket")
+        with db_client.engine.connect() as conn:
+            total_raw = conn.execute(query).scalar()
+        
+        # Contar via fetch
         tratado = db_client.fetch_infomarket_tratado()
-        logger.info("DEBUG: %d registros tratados retornados", len(tratado))
+        
+        logger.info("DEBUG: raw=%d, fetched=%d", total_raw, len(tratado))
         return {
-            "total_tratado": len(tratado),
-            "primeiro_registro": tratado[0] if tratado else None
+            "total_raw_infomarket": total_raw,
+            "registros_fetched": len(tratado),
+            "expected_7863": "Esperamos 7863 registros tratados"
         }
 
     @router.get("/api/v1/infomarket")
