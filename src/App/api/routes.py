@@ -70,9 +70,9 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
         logger.info("GET /api/v1/estoque/valefish")
         return db_client.fetch_estoque_valefish()
 
-    # ── InfoMarket Endpoints (rotas mais específicas primeiro) ──
+    # ── InfoMarket Endpoints ──
 
-    @router.get("/api/v1/infomarket/debug")
+    @router.get("/api/v1/infomarket-debug")
     def debug_infomarket(token: TokenDep) -> dict:
         """Debug: retorna contagens"""
         # Contar via SQL direto
