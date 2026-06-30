@@ -1,5 +1,5 @@
 import logging
-from typing import List
+from typing import List, Union
 
 from fastapi import APIRouter
 
@@ -73,7 +73,7 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
     # ── InfoMarket Endpoints ──
 
     @router.get("/api/v1/infomarket")
-    def listar_infomarket(token: TokenDep, debug: bool = False) -> List[dict] | dict:
+    def listar_infomarket(token: TokenDep, debug: bool = False) -> Union[List[dict], dict]:
         """
         Retorna encartes/preços InfoMarket tratados para Power BI.
         
