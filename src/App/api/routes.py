@@ -73,7 +73,7 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
     # ── InfoMarket Endpoints ──
 
     @router.get("/api/v1/infomarket")
-    def listar_infomarket(token: TokenDep, debug: bool = False) -> Union[List[dict], dict]:
+    def listar_infomarket(token: TokenDep, limit: int = 0, debug: bool = False) -> Union[List[dict], dict]:
         """
         Retorna encartes/preços InfoMarket tratados para Power BI.
         
@@ -84,6 +84,7 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
         Requer autenticação via Bearer token.
         
         Query params:
+        - limit: número máximo de registros (0 = sem limite, default)
         - debug: Se True, retorna contagem em vez dos dados
 
         Colunas: id, price_id, item_id, description, eans, leaflet_id,
@@ -109,7 +110,12 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
             }
         
         # Modo normal
-        logger.info("GET /api/v1/infomarket (tratado)")
-        return db_client.fetch_infomarket_tratado()
+        data = db_client.fetch_infomarket_tratado()
+        effective_limit = limit if limit > 0 else None
+        logger.info("GET /api/v1/infomarket limit=%s returned %d records", effective_limit or "ALL", len(data) if effective_limit is None else min(effective_limit, len(data)))
+        
+        if effective_limit:
+            return data[:effective_limit]
+        return data
 
     return router
