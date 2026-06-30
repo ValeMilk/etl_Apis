@@ -574,7 +574,7 @@ class DatabaseClient:
             rows = conn.execute(query).mappings().all()
 
         result = [dict(row) for row in rows]
-        logger.info(f"fetch_infomarket_tratado returned {len(result)} records")
+        self.logger.info(f"fetch_infomarket_tratado returned {len(result)} records")
         return result
 
     def _prepare_infomarket_rows(self, records: Iterable[dict]) -> Tuple[List[dict], Tuple[date, date]]:
