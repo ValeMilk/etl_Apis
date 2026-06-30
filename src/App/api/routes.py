@@ -71,22 +71,23 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
         return db_client.fetch_estoque_valefish()
 
     @router.get("/api/v1/infomarket")
-    def listar_infomarket(token: TokenDep, limit: int = 5000) -> List[dict]:
+    def listar_infomarket(token: TokenDep) -> List[dict]:
         """
-        Retorna encartes/preços InfoMarket com limite de registros.
-        Default: 5000 registros (otimizado para Power BI).
+        Retorna encartes/preços InfoMarket tratados para Power BI.
+        
+        Aplicação de regras:
+        - Remove preços "padrão" (maior preço quando há variação de preço)
+        - Deduplica por network mantendo o registro mais recente
+        
         Requer autenticação via Bearer token.
 
-        Colunas: price_id, item_id, description, eans, leaflet_id,
+        Colunas: id, price_id, item_id, description, eans, leaflet_id,
                  number_of_pages, leaflet_name, leaflet_type, delivery_channel,
-                 store_id, store_name, value, validity_start_date,
+                 network_id, network_name, value, validity_start_date,
                  validity_finish_date, dynamic, minimum_quantity, details,
-                 page, city_name, city_id, network_id, network_name
-
-        Query params:
-        - limit: número máximo de registros (default 5000)
+                 page, city_name, city_id, brand_id, brand_name, identifier, created_at
         """
-        logger.info("GET /api/v1/infomarket?limit=%d", limit)
-        return db_client.fetch_infomarket(limit=limit)
+        logger.info("GET /api/v1/infomarket (tratado)")
+        return db_client.fetch_infomarket_tratado()
 
     return router
