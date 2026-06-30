@@ -573,7 +573,9 @@ class DatabaseClient:
         with self.engine.connect() as conn:
             rows = conn.execute(query).mappings().all()
 
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        logger.info(f"fetch_infomarket_tratado returned {len(result)} records")
+        return result
 
     def _prepare_infomarket_rows(self, records: Iterable[dict]) -> Tuple[List[dict], Tuple[date, date]]:
         """Converte registros da API InfoMarket para linhas do banco."""
