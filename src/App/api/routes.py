@@ -72,27 +72,8 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
 
     # ── InfoMarket Endpoints ──
 
-    @router.get("/api/v1/infomarket-debug")
-    def debug_infomarket(token: TokenDep) -> dict:
-        """Debug: retorna contagens"""
-        # Contar via SQL direto
-        from sqlalchemy import text
-        query = text("SELECT COUNT(*) FROM public.infomarket")
-        with db_client.engine.connect() as conn:
-            total_raw = conn.execute(query).scalar()
-        
-        # Contar via fetch
-        tratado = db_client.fetch_infomarket_tratado()
-        
-        logger.info("DEBUG: raw=%d, fetched=%d", total_raw, len(tratado))
-        return {
-            "total_raw_infomarket": total_raw,
-            "registros_fetched": len(tratado),
-            "expected_7863": "Esperamos 7863 registros tratados"
-        }
-
     @router.get("/api/v1/infomarket")
-    def listar_infomarket(token: TokenDep) -> List[dict]:
+    def listar_infomarket(token: TokenDep, debug: bool = False) -> List[dict] | dict:
         """
         Retorna encartes/preços InfoMarket tratados para Power BI.
         
@@ -101,6 +82,9 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
         - Deduplica por network mantendo o registro mais recente
         
         Requer autenticação via Bearer token.
+        
+        Query params:
+        - debug: Se True, retorna contagem em vez dos dados
 
         Colunas: id, price_id, item_id, description, eans, leaflet_id,
                  number_of_pages, leaflet_name, leaflet_type, delivery_channel,
@@ -108,6 +92,23 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
                  validity_finish_date, dynamic, minimum_quantity, details,
                  page, city_name, city_id, brand_id, brand_name, identifier, created_at
         """
+        if debug:
+            # Modo debug
+            from sqlalchemy import text
+            query = text("SELECT COUNT(*) FROM public.infomarket")
+            with db_client.engine.connect() as conn:
+                total_raw = conn.execute(query).scalar()
+            
+            tratado = db_client.fetch_infomarket_tratado()
+            logger.info("DEBUG: raw=%d, fetched=%d", total_raw, len(tratado))
+            return {
+                "debug": True,
+                "total_raw_infomarket": total_raw,
+                "registros_fetched": len(tratado),
+                "expected_tratado": 7863
+            }
+        
+        # Modo normal
         logger.info("GET /api/v1/infomarket (tratado)")
         return db_client.fetch_infomarket_tratado()
 
