@@ -92,51 +92,12 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
 
     @router.get("/api/v1/infomarket/debug")
     def debug_infomarket(token: TokenDep) -> dict:
-        """Debug: conta registros em cada etapa da query"""
-        from sqlalchemy import text
-        
-        query_debug = text("""
-            SELECT 
-                (SELECT COUNT(*) FROM public.infomarket) as total_raw,
-                (SELECT COUNT(*) FROM (
-                    WITH preco_tratado AS (
-                        SELECT *, 
-                            MIN(value) OVER (PARTITION BY network_id, brand_id, item_id, leaflet_id, validity_start_date, validity_finish_date) AS menor_preco,
-                            MAX(value) OVER (PARTITION BY network_id, brand_id, item_id, leaflet_id, validity_start_date, validity_finish_date) AS maior_preco
-                        FROM public.infomarket
-                    ),
-                    sem_preco_padrao AS (
-                        SELECT * FROM preco_tratado
-                        WHERE NOT (menor_preco <> maior_preco AND value = maior_preco)
-                    )
-                    SELECT * FROM sem_preco_padrao
-                ) as t1) as apos_sem_preco,
-                (SELECT COUNT(*) FROM (
-                    WITH preco_tratado AS (
-                        SELECT *, 
-                            MIN(value) OVER (PARTITION BY network_id, brand_id, item_id, leaflet_id, validity_start_date, validity_finish_date) AS menor_preco,
-                            MAX(value) OVER (PARTITION BY network_id, brand_id, item_id, leaflet_id, validity_start_date, validity_finish_date) AS maior_preco
-                        FROM public.infomarket
-                    ),
-                    sem_preco_padrao AS (
-                        SELECT * FROM preco_tratado
-                        WHERE NOT (menor_preco <> maior_preco AND value = maior_preco)
-                    ),
-                    deduplicado_network AS (
-                        SELECT *, ROW_NUMBER() OVER (PARTITION BY network_id, brand_id, item_id, leaflet_id, validity_start_date, validity_finish_date, value ORDER BY created_at DESC, store_id) AS rn_network
-                        FROM sem_preco_padrao
-                    )
-                    SELECT * FROM deduplicado_network WHERE rn_network = 1
-                ) as t2) as total_final
-        """)
-        
-        with db_client.engine.connect() as conn:
-            result = conn.execute(query_debug).mappings().first()
-        
-        data = dict(result) if result else {}
-        data['registros_fetched'] = len(db_client.fetch_infomarket_tratado())
-        
-        logger.info("DEBUG infomarket: %s", data)
-        return data
+        """Debug: retorna contagens"""
+        tratado = db_client.fetch_infomarket_tratado()
+        logger.info("DEBUG: %d registros tratados retornados", len(tratado))
+        return {
+            "total_tratado": len(tratado),
+            "primeiro_registro": tratado[0] if tratado else None
+        }
 
     return router
