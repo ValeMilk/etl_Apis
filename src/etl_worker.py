@@ -330,21 +330,21 @@ def main():
         name="Vendas + Estoque (ValeMilk + ValeFish) - Diário",
     )
 
-    # JOB 2: InfoMarket (encartes/preços) - 3x por dia (08h, 16h, 00h)
+    # JOB 2: InfoMarket (encartes/preços) - 3x por dia (00h, 12h, 16h)
     scheduler.add_job(
         run_infomarket_job,
         "cron",
-        hour="0,8,16",
+        hour="0,12,16",
         minute=0,
         id="infomarket_job",
         name="InfoMarket - 3x ao dia",
     )
 
-    # JOB 3: ATIVMOB Estoque - 3x por dia (08h, 16h, 00h)
+    # JOB 3: ATIVMOB Estoque - 3x por dia (00h, 12h, 16h)
     scheduler.add_job(
         run_ativmob_job,
         "cron",
-        hour="0,8,16",
+        hour="0,12,16",
         minute=15,  # 15 minutos após InfoMarket para evitar sobrecarga
         id="ativmob_job",
         name="ATIVMOB Estoque - 3x ao dia",
