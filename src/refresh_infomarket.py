@@ -53,9 +53,9 @@ def main():
         
         # Step 2: Puxar últimos 120 dias
         logger.info("")
-        logger.info("Step 2: Puxando últimos 120 dias da API InfoMarket...")
+        logger.info("Step 2: Puxando últimos 200 dias da API InfoMarket...")
         hoje = datetime.now().date()
-        start_date = hoje - timedelta(days=120)
+        start_date = hoje - timedelta(days=200)
         finish_date = hoje + timedelta(days=60)  # Inclui encartes futuros
         
         logger.info(f"📅 Período: {start_date} → {finish_date}")
