@@ -14,7 +14,6 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 
 from api_cometa import CometaClient
-from infomarket_client import InfomarketClient
 from App.core.config import settings
 from App.core.database import DatabaseClient
 from App.etl.etl_service import ETLService
@@ -143,38 +142,19 @@ def run_infomarket_job():
 
         # ── InfoMarket (encartes/preços) ──
         if settings.infomarket_email:
-            from datetime import timedelta
             try:
-                infomarket_client = InfomarketClient(
-                    email=settings.infomarket_email,
-                    password=settings.infomarket_password.get_secret_value(),
-                    timeout=settings.request_timeout,
+                logger.info("Calling refresh_infomarket.py (Extract→Deduplicate→Load)...")
+                import subprocess
+                result = subprocess.run(
+                    ["python", "/app/refresh_infomarket.py"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3600
                 )
-                logger.info("InfomarketClient initialized")
-
-                hoje = datetime.now().date()
-                
-                # Sempre puxar desde 7 dias atrás até lookahead dias à frente
-                # Isso garante captura de:
-                # 1. Encartes que começam hoje
-                # 2. Atualizações de encartes recentes
-                # 3. Novos encartes futuros
-                start_date = hoje - timedelta(days=7)  # Lookback de 7 dias
-                finish_date = hoje + timedelta(days=settings.infomarket_lookahead_days)
-                
-                logger.info("InfoMarket sync mode: %s → %s (7 dias lookback + %d dias lookahead)", 
-                           start_date, finish_date, settings.infomarket_lookahead_days)
-
-                logger.info(
-                    "Starting InfoMarket processing (%s → %s)...",
-                    start_date.strftime("%Y-%m-%d"), finish_date.strftime("%Y-%m-%d")
-                )
-                records = infomarket_client.get_prices(start_date, finish_date)
-                if records:
-                    deleted, inserted = db_client.replace_infomarket(records)
-                    logger.info("InfoMarket finished. Deleted=%d Inserted=%d", deleted, inserted)
+                if result.returncode == 0:
+                    logger.info("InfoMarket refresh completed successfully")
                 else:
-                    logger.warning("InfoMarket: nenhum registro retornado")
+                    logger.error("InfoMarket refresh failed: %s", result.stderr[-500:] if result.stderr else "")
             except Exception as e:
                 logger.warning("InfoMarket skipped due to error: %s", e)
         else:
@@ -320,11 +300,11 @@ def main():
     # Configura scheduler com BlockingScheduler (para processos standalone)
     scheduler = BlockingScheduler()
 
-    # JOB 1: Vendas + Estoque (ValeMilk + ValeFish) - 1x por dia às 02:00
+    # JOB 1: Vendas + Estoque (ValeMilk + ValeFish) - 1x por dia às 05:00
     scheduler.add_job(
         run_vendas_estoque_job,
         "cron",
-        hour=2,
+        hour=5,
         minute=0,
         id="vendas_estoque_job",
         name="Vendas + Estoque (ValeMilk + ValeFish) - Diário",

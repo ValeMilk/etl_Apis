@@ -1,7 +1,9 @@
 import logging
+import json
 from typing import List, Union
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 
 from App.api.dependencies import TokenDep
 from App.core.database import DatabaseClient
@@ -17,11 +19,12 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
     logger = logging.getLogger("Routes")
 
     @router.get("/api/v1/vendas")
-    def listar_vendas(token: TokenDep, limit: int = 0) -> List[dict]:
+    def listar_vendas(token: TokenDep, limit: int = 0, offset: int = 0, days: int = 0) -> List[dict]:
         """
         Retorna vendas em ordem cronológica reversa.
         Default: sem limite (retorna todos os registros).
-        Use ?limit=N para limitar o número de registros retornados.
+        Use ?limit=N&offset=M para paginação (buscar N registros pulando M).
+        Use ?days=N para retornar apenas últimos N dias (0 = sem filtro).
         Requer autenticação via Bearer token.
         
         Colunas: data, loja_id, nome_loja, cnpj_loja, ean, cod_interno,
@@ -29,10 +32,48 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
         
         Query params:
         - limit: número máximo de registros (0 = sem limite, default)
+        - offset: pular N registros para paginação (0 = início, default)
+        - days: filtrar últimos N dias (0 = sem filtro, default)
         """
         effective_limit = limit if limit > 0 else None
-        logger.info("GET /api/v1/vendas limit=%s", effective_limit or "ALL")
-        return db_client.fetch_vendas(limit=effective_limit)
+        logger.info("GET /api/v1/vendas limit=%s offset=%s days=%s", effective_limit or "ALL", offset, days or "ALL")
+        return db_client.fetch_vendas(limit=effective_limit, offset=offset, days=days if days > 0 else None)
+
+    @router.get("/api/v1/vendas/completo")
+    def listar_vendas_completo(token: TokenDep) -> List[dict]:
+        """
+        Retorna TODOS os registros de vendas em uma única requisição.
+        Otimizado para Power BI Desktop/Service (sem paginação).
+        Requer autenticação via Bearer token.
+        
+        ⚠️ AVISO: Retorna todos os registros (~543k) - pode demorar 4-5 minutos.
+        Use este endpoint para importar dados completos no Power BI.
+        
+        Colunas: data, loja_id, nome_loja, cnpj_loja, ean, cod_interno,
+                 plu, produto, qtd, venda, custo, created_at
+        """
+        logger.info("GET /api/v1/vendas/completo - Buscando todos os registros")
+        return db_client.fetch_vendas()
+
+    @router.get("/api/v1/vendas/stream")
+    def listar_vendas_stream(token: TokenDep):
+        """
+        Retorna TODOS os registros de vendas em formato NDJSON (streaming).
+        MAS RÁPIDO que /completo - ideal para Power BI.
+        Cada linha é um registro JSON, separado por newline.
+        
+        ⚠️ AVISO: Retorna todos os registros (~543k) - pode demorar 2-3 minutos.
+        Use este endpoint para importar dados completos no Power BI.
+        """
+        logger.info("GET /api/v1/vendas/stream - Iniciando stream")
+        
+        def generate():
+            """Generator que retorna registros um por um em formato NDJSON"""
+            registros = db_client.fetch_vendas()
+            for registro in registros:
+                yield json.dumps(registro) + "\n"
+        
+        return StreamingResponse(generate(), media_type="application/x-ndjson")
 
     @router.get("/api/v1/estoque")
     def listar_estoque(token: TokenDep, limit: int = 5000) -> List[dict]:

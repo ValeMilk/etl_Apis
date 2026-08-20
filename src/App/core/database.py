@@ -219,12 +219,26 @@ class DatabaseClient:
         self.logger.info("Replaced estoque. Deleted=%s Inserted=%s", deleted, inserted)
         return deleted, inserted
 
-    def fetch_vendas(self, limit: Optional[int] = None) -> List[dict]:
+    def fetch_vendas(self, limit: Optional[int] = None, offset: int = 0, days: Optional[int] = None) -> List[dict]:
         """
         Retorna todas as vendas ordenadas por data DESC e id DESC.
-        Sem paginação para consumo BI.
+        
+        Args:
+            limit: Número máximo de registros (None = sem limite)
+            offset: Pular N registros (para paginação)
+            days: Filtrar últimos N dias (None = sem filtro)
         """
+        from datetime import datetime, timedelta
+        
         stmt = select(self.vendas).order_by(self.vendas.c.data.desc(), self.vendas.c.id.desc())
+        
+        if days:
+            cutoff_date = datetime.utcnow().date() - timedelta(days=days)
+            stmt = stmt.where(self.vendas.c.data >= cutoff_date)
+        
+        if offset > 0:
+            stmt = stmt.offset(offset)
+        
         if limit:
             stmt = stmt.limit(limit)
 
@@ -338,7 +352,7 @@ class DatabaseClient:
                 "loja_id": loja_id,
                 "nome_loja": item.get("NOME_LOJA"),
                 "cnpj_loja": item.get("CNPJ_LOJA"),
-                "ean": item.get("EAN"),
+                "ean": self._sanitize_ean(item.get("EAN")),
                 "cod_interno": item.get("COD_INTERNO"),
                 "plu": self._safe_int(item.get("PLU")),
                 "produto": item.get("PRODUTO"),
@@ -378,7 +392,7 @@ class DatabaseClient:
                 "loja_id": loja_id,
                 "codigo_produto": str(codigo_produto),
                 "descricao_produto": str(descricao or ""),
-                "ean": item.get("EAN") or item.get("ean"),
+                "ean": self._sanitize_ean(item.get("EAN") or item.get("ean")),
                 "estq_loja": self._safe_int(item.get("ESTQ_LOJA") or item.get("estq_loja"), 0),
                 "estq_avaria": self._safe_int(item.get("ESTQ_AVARIA") or item.get("estq_avaria"), 0),
             }
@@ -429,6 +443,19 @@ class DatabaseClient:
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _sanitize_ean(value, max_len: int = 20) -> Optional[str]:
+        """
+        Normaliza EAN para caber na coluna ean VARCHAR(20).
+        A API Cometa às vezes retorna dois códigos colados por vírgula
+        (ex: '7898200380885,0000001516029') — mantém só o primeiro e,
+        por segurança, ainda corta em max_len para nunca estourar a coluna.
+        """
+        if value is None:
+            return None
+        ean = str(value).split(",")[0].strip()
+        return ean[:max_len] or None
 
     # ── InfoMarket methods ────────────────────────────────────────────────────
 
