@@ -352,7 +352,7 @@ class DatabaseClient:
                 "loja_id": loja_id,
                 "nome_loja": item.get("NOME_LOJA"),
                 "cnpj_loja": item.get("CNPJ_LOJA"),
-                "ean": self._sanitize_ean(item.get("EAN")),
+                "ean": None,  # não usado pelo BI; API às vezes manda valor > VARCHAR(20) e derrubava o insert
                 "cod_interno": item.get("COD_INTERNO"),
                 "plu": self._safe_int(item.get("PLU")),
                 "produto": item.get("PRODUTO"),
@@ -392,7 +392,7 @@ class DatabaseClient:
                 "loja_id": loja_id,
                 "codigo_produto": str(codigo_produto),
                 "descricao_produto": str(descricao or ""),
-                "ean": self._sanitize_ean(item.get("EAN") or item.get("ean")),
+                "ean": None,  # não usado pelo BI; API às vezes manda valor > VARCHAR(20) e derrubava o insert
                 "estq_loja": self._safe_int(item.get("ESTQ_LOJA") or item.get("estq_loja"), 0),
                 "estq_avaria": self._safe_int(item.get("ESTQ_AVARIA") or item.get("estq_avaria"), 0),
             }
@@ -443,19 +443,6 @@ class DatabaseClient:
             return float(value)
         except (TypeError, ValueError):
             return default
-
-    @staticmethod
-    def _sanitize_ean(value, max_len: int = 20) -> Optional[str]:
-        """
-        Normaliza EAN para caber na coluna ean VARCHAR(20).
-        A API Cometa às vezes retorna dois códigos colados por vírgula
-        (ex: '7898200380885,0000001516029') — mantém só o primeiro e,
-        por segurança, ainda corta em max_len para nunca estourar a coluna.
-        """
-        if value is None:
-            return None
-        ean = str(value).split(",")[0].strip()
-        return ean[:max_len] or None
 
     # ── InfoMarket methods ────────────────────────────────────────────────────
 
