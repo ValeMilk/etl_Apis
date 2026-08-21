@@ -123,22 +123,15 @@ jobs:
         key: ${{ secrets.VPS_SSH_KEY }}
         script: |
           cd /home/jefferson_pwr/BI_COMETA
-          
+
           # Pull latest code
           git pull origin main
-          
-          # Pull latest images from GitHub Registry
-          docker login -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }} ${{ env.REGISTRY }}
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main-api
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main-etl
-          
-          # Update docker-compose.yml with new image tags
-          sed -i "s|image: .*-api|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main-api|" docker/docker-compose.yml
-          sed -i "s|image: .*-etl|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main-etl|" docker/docker-compose.yml
-          
-          # Restart services
-          docker-compose -f docker/docker-compose.yml down
-          docker-compose -f docker/docker-compose.yml up -d
+
+          # Rebuild images from the freshly pulled source and restart services.
+          # docker-compose.yml builds app/etl locally (build:, not image:), so
+          # `up -d` alone would silently reuse stale cached images — always
+          # force a rebuild here.
+          docker-compose -f docker/docker-compose.yml up -d --build
           
           # Wait for services to be healthy
           sleep 10
