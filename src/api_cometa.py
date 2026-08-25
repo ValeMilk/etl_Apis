@@ -38,25 +38,48 @@ class CometaClient:
         self._token_obtained_at: Optional[datetime] = None
 
     def _obter_token(self) -> Optional[str]:
-        """Autentica na API e retorna o token."""
+        """
+        Autentica na API e retorna o token.
+        Retry automático até 10 vezes com backoff exponencial (igual aos
+        outros endpoints) — a API derruba conexão/retorna 403 esporadicamente
+        no login, e sem retry isso zerava a coleta de vendas do dia inteiro.
+        """
         url_login = f"{self.base_url}/login"
         payload = {"email": self.email, "password": self.password}
-        try:
-            response = requests.post(
-                url_login,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                verify=self.verify_ssl,
-                timeout=self.timeout,
-            )
-            if response.status_code == 200:
-                token = response.text.strip()
-                self._token_obtained_at = datetime.now()
-                self.logger.info("Token obtained successfully, valid for ~%dh", self.token_refresh_hours)
-                return token
-            self.logger.error("Login failed: %s", response.status_code)
-        except Exception:
-            self.logger.exception("Login request failed")
+
+        max_retries = 10
+        retry_count = 0
+        while retry_count < max_retries:
+            try:
+                response = requests.post(
+                    url_login,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    verify=self.verify_ssl,
+                    timeout=self.timeout,
+                )
+                if response.status_code == 200:
+                    token = response.text.strip()
+                    self._token_obtained_at = datetime.now()
+                    self.logger.info("Token obtained successfully, valid for ~%dh", self.token_refresh_hours)
+                    return token
+                self.logger.warning(
+                    "Login failed: status_code=%s (tentativa %d/%d)",
+                    response.status_code, retry_count + 1, max_retries
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "Login request failed (tentativa %d/%d): %s",
+                    retry_count + 1, max_retries, str(e)
+                )
+
+            retry_count += 1
+            if retry_count < max_retries:
+                wait_time = min(2 ** retry_count, 30)
+                self.logger.info(f"⏳ Aguardando {wait_time}s antes de tentar login novamente...")
+                time.sleep(wait_time)
+
+        self.logger.error(f"❌ Falha permanente ao obter token após {max_retries} tentativas")
         return None
 
     def _is_token_expired(self) -> bool:
