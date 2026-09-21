@@ -1,6 +1,5 @@
 import calendar
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import List
 
@@ -27,48 +26,21 @@ class ETLService:
 
     def processar_vendas(self) -> None:
         """
-        ETL de vendas:
-        - Mês anterior (lookback 5 dias): get_vendas_loja por loja (API exige filtro de loja para datas antigas)
-        - Mês atual: get_vendas_periodo sem filtro de loja (API rejeita filtro de loja para datas recentes)
+        ETL de vendas: busca só os ultimos 2 dias (ontem + anteontem).
+
+        Antes buscava o mes inteiro + lookback de 5 dias por loja (~100
+        requisicoes/dia por empresa) - a TI da Cometa bloqueou o acesso por
+        excesso de chamadas. O "+1 dia de garantia" cobre o caso de a API
+        ainda nao ter os dados de ontem prontos na hora em que o job roda.
         """
-        self.logger.info("Starting vendas ETL")
+        self.logger.info("Starting vendas ETL (ultimos 2 dias)")
 
         hoje = datetime.now()
-        inicio_mes_atual = hoje.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        fim = hoje - timedelta(days=1)  # API tem dados até ontem
-        todas_vendas: List[dict] = []
+        ontem = hoje - timedelta(days=1)
+        anteontem = hoje - timedelta(days=2)
 
-        # ── Lookback mês anterior (ex: 27-31/03) via get_vendas_loja por loja ──
-        inicio_lookback = inicio_mes_atual - timedelta(days=5)
-        if inicio_lookback.date() < inicio_mes_atual.date():
-            fim_mes_anterior = inicio_mes_atual - timedelta(days=1)
-            self.logger.info(
-                "Fetching prev month vendas %s to %s (per loja)",
-                inicio_lookback.date(), fim_mes_anterior.date()
-            )
-            lojas = self.cometa_client.list_lojas()
-            if lojas:
-                with ThreadPoolExecutor(max_workers=8) as executor:
-                    futuros = {
-                        executor.submit(
-                            self.cometa_client.get_vendas_loja, loja, inicio_lookback, fim_mes_anterior
-                        ): loja
-                        for loja in lojas
-                    }
-                    for future in as_completed(futuros):
-                        try:
-                            todas_vendas.extend(future.result())
-                        except Exception:
-                            self.logger.exception("Failed prev month vendas for loja %s", futuros[future])
-
-        # ── Mês atual (ex: 01-02/04) via get_vendas_periodo sem filtro de loja ──
-        if fim.date() >= inicio_mes_atual.date():
-            self.logger.info(
-                "Fetching current month vendas %s to %s (sem filtro de loja)",
-                inicio_mes_atual.date(), fim.date()
-            )
-            vendas_mes_atual = self.cometa_client.get_vendas_periodo(inicio_mes_atual, fim)
-            todas_vendas.extend(vendas_mes_atual)
+        self.logger.info("Fetching vendas %s a %s", anteontem.date(), ontem.date())
+        todas_vendas = self.cometa_client.get_vendas_periodo(anteontem, ontem)
 
         if not todas_vendas:
             self.logger.warning("No vendas fetched")
