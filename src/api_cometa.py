@@ -1,5 +1,8 @@
 import calendar
+import hashlib
+import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -10,6 +13,12 @@ import urllib3
 from App.shared.utils import flatten_vendas, flatten_estoque
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Cache de token compartilhado entre processos (cron diario + scripts manuais
+# via docker exec). Sem isso, cada processo novo mintava seu proprio login,
+# fazendo a Cometa ver varios tokens/sessoes ativos ao mesmo tempo para a
+# mesma conta - foi sinalizado como uso suspeito pelo TI deles.
+_TOKEN_CACHE_DIR = "/tmp/cometa_token_cache"
 
 
 class CometaClient:
@@ -36,6 +45,33 @@ class CometaClient:
         self.logger = logging.getLogger(self.__class__.__name__)
         self._token: Optional[str] = None
         self._token_obtained_at: Optional[datetime] = None
+        self._token_cache_file = os.path.join(
+            _TOKEN_CACHE_DIR,
+            hashlib.sha256(f"{self.base_url}:{self.email}".encode()).hexdigest() + ".json",
+        )
+        self._load_cached_token()
+
+    def _load_cached_token(self) -> None:
+        """Reaproveita um token ainda valido salvo por qualquer processo anterior."""
+        try:
+            with open(self._token_cache_file, "r") as f:
+                data = json.load(f)
+            obtained_at = datetime.fromisoformat(data["obtained_at"])
+            if datetime.now() - obtained_at < timedelta(hours=self.token_refresh_hours):
+                self._token = data["token"]
+                self._token_obtained_at = obtained_at
+                self.logger.info("Reusing cached token from disk (obtained at %s)", obtained_at.isoformat())
+        except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+            pass  # sem cache valido, vai logar normalmente quando precisar
+
+    def _save_cached_token(self) -> None:
+        """Salva o token no disco para outros processos reaproveitarem."""
+        try:
+            os.makedirs(_TOKEN_CACHE_DIR, exist_ok=True)
+            with open(self._token_cache_file, "w") as f:
+                json.dump({"token": self._token, "obtained_at": self._token_obtained_at.isoformat()}, f)
+        except OSError:
+            self.logger.warning("Failed to persist token cache to disk", exc_info=True)
 
     def _obter_token(self) -> Optional[str]:
         """
@@ -61,6 +97,8 @@ class CometaClient:
                 if response.status_code == 200:
                     token = response.text.strip()
                     self._token_obtained_at = datetime.now()
+                    self._token = token
+                    self._save_cached_token()
                     self.logger.info("Token obtained successfully, valid for ~%dh", self.token_refresh_hours)
                     return token
                 self.logger.warning(
