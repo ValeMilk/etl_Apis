@@ -173,9 +173,23 @@ def run_infomarket_job():
         logger.error("INFOMARKET Job Failed at %s (duration: %.2f seconds)", job_end.isoformat(), duration)
 
 
+# (nome, sufixo do storeCNPJ, event_code). O interior é uma fila separada na ATIVMOB;
+# as duas vão para a mesma tabela ativmob_estoque, distinguidas por event_code.
+ATIVMOB_FONTES = [
+    ("capital", "", "estoque"),
+    ("interior", "_interior", "estoque_int"),
+]
+
+
 def run_ativmob_job():
+    """Executa o job de ATIVMOB Estoque (capital e interior) - 3x por dia."""
+    for nome, sufixo, event_code in ATIVMOB_FONTES:
+        _run_ativmob_fonte(nome, sufixo, event_code)
+
+
+def _run_ativmob_fonte(nome: str, sufixo: str, event_code: str):
     """
-    Executa job de ATIVMOB Estoque - 3x por dia.
+    Esvazia a fila de eventos de UMA fonte ATIVMOB (get -> insert -> ACK).
     
     Loop até não haver mais eventos (garante que pega TODOS os eventos pendentes).
     A API retorna até 100 eventos por chamada - se retornar 100, há mais eventos.
@@ -186,7 +200,7 @@ def run_ativmob_job():
 
     job_start = datetime.now()
     logger.info("=" * 80)
-    logger.info("ATIVMOB Job Started at %s", job_start.isoformat())
+    logger.info("ATIVMOB Job Started (%s) at %s", nome, job_start.isoformat())
     logger.info("=" * 80)
 
     try:
@@ -199,11 +213,11 @@ def run_ativmob_job():
                 db_client = DatabaseClient(db_url=settings.db_url, echo=False)
                 ativmob_client = AtivmobClient(
                     api_key=settings.ativmob_api_key,
-                    store_cnpj=settings.ativmob_store_cnpj,
+                    store_cnpj=settings.ativmob_store_cnpj + sufixo,
                     timeout=settings.request_timeout,
                 )
 
-                logger.info("📌 CNPJ: %s | Event: estoque", settings.ativmob_store_cnpj)
+                logger.info("📌 [%s] CNPJ: %s | Event: %s", nome, ativmob_client.store_cnpj, event_code)
 
                 # ── Loop para garantir que pega TODOS os eventos ──────────────
                 total_events_fetched = 0
@@ -219,7 +233,7 @@ def run_ativmob_job():
                     # Step 1: Buscar até 100 eventos
                     logger.info("─" * 80)
                     logger.info("📦 BATCH #%d - Buscando eventos...", batch_number)
-                    response = ativmob_client.get_events(event_code="estoque")
+                    response = ativmob_client.get_events(event_code=event_code)
                     events = response.get("events", [])
                     max_num_events = response.get("maxNumEvents", 100)
 
@@ -274,21 +288,21 @@ def run_ativmob_job():
                     logger.warning("⚠️ Atingido limite de %d batches - pode haver mais eventos", max_batches)
 
             except Exception as e:
-                logger.warning("ATIVMOB skipped due to error: %s", e, exc_info=True)
+                logger.warning("ATIVMOB [%s] skipped due to error: %s", nome, e, exc_info=True)
         else:
             logger.info("ATIVMOB credentials not configured, skipping")
 
         job_end = datetime.now()
         duration = (job_end - job_start).total_seconds()
         logger.info("=" * 80)
-        logger.info("ATIVMOB Job Completed at %s (duration: %.2f seconds)", job_end.isoformat(), duration)
+        logger.info("ATIVMOB Job Completed (%s) at %s (duration: %.2f seconds)", nome, job_end.isoformat(), duration)
         logger.info("=" * 80)
 
     except Exception:
-        logger.exception("ATIVMOB Job failed with exception")
+        logger.exception("ATIVMOB Job failed with exception (%s)", nome)
         job_end = datetime.now()
         duration = (job_end - job_start).total_seconds()
-        logger.error("ATIVMOB Job Failed at %s (duration: %.2f seconds)", job_end.isoformat(), duration)
+        logger.error("ATIVMOB Job Failed (%s) at %s (duration: %.2f seconds)", nome, job_end.isoformat(), duration)
 
 
 def main():

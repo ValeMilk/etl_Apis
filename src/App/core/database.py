@@ -737,9 +737,13 @@ class DatabaseClient:
                 elif "ruptura" in label:
                     em_ruptura = value  # "SIM" ou "NÃO"
 
+            # A fila do interior devolve "<cnpj>_interior" (23 chars), que estoura
+            # VARCHAR(20). Grava só o CNPJ base; capital/interior se distinguem por event_code.
+            store_cnpj = (event.get("storeCNPJ") or "").split("_")[0] or None
+
             row = {
                 "event_id": str(event_id),
-                "store_cnpj": event.get("storeCNPJ"),
+                "store_cnpj": store_cnpj,
                 "event_code": event.get("event_code"),
                 "event_title": event.get("event_title"),
                 "event_dth": event_dth,
