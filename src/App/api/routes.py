@@ -181,6 +181,18 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
         logger.info("GET /api/v1/ativmob/agendamentos limit=%s", effective_limit or "ALL")
         return db_client.fetch_ativmob_agendamentos(limit=effective_limit)
 
+    @router.get("/api/v1/ativmob/agendamentos/por-dia")
+    def listar_ativmob_agendamentos_por_dia(token: TokenDep) -> List[dict]:
+        """
+        Retorna (agente, dia da semana, loja) para cada dia em que o agente tem
+        visita agendada - já despivota dom..sab e filtra categoria_atividade='visita'.
+        Requer autenticação via Bearer token.
+
+        Colunas: nome_agente, nome_dia, codigo_local
+        """
+        logger.info("GET /api/v1/ativmob/agendamentos/por-dia")
+        return db_client.fetch_ativmob_agendamentos_por_dia()
+
     @router.get("/api/v1/ativmob/km")
     def listar_ativmob_km(token: TokenDep, limit: int = 0) -> List[dict]:
         """

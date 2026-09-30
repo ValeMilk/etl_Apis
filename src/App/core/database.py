@@ -990,6 +990,37 @@ class DatabaseClient:
 
         return [dict(row) for row in rows]
 
+    def fetch_ativmob_agendamentos_por_dia(self) -> List[dict]:
+        """
+        Retorna (agente, dia da semana, loja) para cada dia em que o agente tem
+        visita agendada (categoria_atividade='visita' e o flag daquele dia é TRUE).
+
+        Despivota dom..sab em linhas via LATERAL VALUES - específico de Postgres.
+        """
+        query = text("""
+            SELECT DISTINCT
+                a.nome_agente,
+                dia.nome_dia,
+                a.codigo_local
+            FROM public.ativmob_agendamentos a
+            CROSS JOIN LATERAL (VALUES
+                ('1-segunda', a.seg),
+                ('2-terca',   a.ter),
+                ('3-quarta',  a.qua),
+                ('4-quinta',  a.qui),
+                ('5-sexta',   a.sex),
+                ('6-sabado',  a.sab)
+            ) AS dia(nome_dia, ativo)
+            WHERE a.categoria_atividade = 'visita'
+              AND dia.ativo
+            ORDER BY a.nome_agente, dia.nome_dia, a.codigo_local
+        """)
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(query).mappings().all()
+
+        return [dict(row) for row in rows]
+
     # ── ATIVMOB Km (conclusão de roteiro) ────────────────────────────────────
 
     def insert_ativmob_km(self, events: Iterable[dict]) -> int:
