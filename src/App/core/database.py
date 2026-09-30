@@ -1,6 +1,6 @@
 import logging
 from contextlib import contextmanager
-from datetime import datetime, date
+from datetime import datetime, date, time
 from typing import Iterable, List, Optional, Tuple
 
 from sqlalchemy import (
@@ -11,8 +11,10 @@ from sqlalchemy import (
     Integer,
     String,
     Float,
+    Boolean,
     Date,
     DateTime,
+    Time,
     Text,
     select,
     delete,
@@ -153,6 +155,37 @@ class DatabaseClient:
             Column("em_ruptura", String(10), nullable=True),  # "SIM" ou "NÃO"
             # JSON completo do form[] para auditoria
             Column("form_json", Text, nullable=True),
+            Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
+        )
+
+        self.ativmob_agendamentos = Table(
+            "ativmob_agendamentos",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            # origem = fonte lógica (capital/interior). Chave de escopo do replace
+            # (DELETE ... WHERE origem = :origem) - o payload não identifica de qual
+            # storeCNPJ veio o registro, então essa coluna é obrigatória mesmo com
+            # uma fonte só ativa hoje.
+            Column("origem", String(20), nullable=False, index=True),
+            Column("store_cnpj", String(20), nullable=True),
+            Column("tipo_evento", String(10), nullable=True),
+            Column("codigo_local", String(50), nullable=True),  # API manda null às vezes
+            Column("nome_agente", String(255), nullable=True),
+            Column("login", String(100), nullable=True),
+            Column("codigo_agente", String(50), nullable=True),
+            Column("dt_referencia", Date, nullable=True),
+            Column("hora_referencia", Time, nullable=True),
+            Column("dom", Boolean, nullable=False, default=False),
+            Column("seg", Boolean, nullable=False, default=False),
+            Column("ter", Boolean, nullable=False, default=False),
+            Column("qua", Boolean, nullable=False, default=False),
+            Column("qui", Boolean, nullable=False, default=False),
+            Column("sex", Boolean, nullable=False, default=False),
+            Column("sab", Boolean, nullable=False, default=False),
+            Column("titulo_tipo_atividade", String(255), nullable=True),
+            Column("categoria_atividade", String(50), nullable=False, default="outro"),
+            # JSON bruto do registro para auditoria/schema drift
+            Column("raw_json", Text, nullable=True),
             Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
         )
 
@@ -443,6 +476,57 @@ class DatabaseClient:
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _safe_bool_flag(value, default: bool = False) -> bool:
+        """Converte flag '0'/'1' (dom..sab) para bool. Valor inesperado -> default, nunca lança."""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        text_value = str(value).strip()
+        if text_value == "1":
+            return True
+        if text_value == "0":
+            return False
+        return default
+
+    @staticmethod
+    def _parse_iso_date(value) -> Optional[date]:
+        """Converte 'YYYY-MM-DD' (dt_referencia) para date. Retorna None se inválido."""
+        if not value:
+            return None
+        try:
+            return datetime.strptime(str(value), "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _parse_time(value) -> Optional[time]:
+        """Converte 'HH:MM:SS' (hora_referencia) para datetime.time. Retorna None se inválido."""
+        if not value:
+            return None
+        try:
+            return datetime.strptime(str(value), "%H:%M:%S").time()
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _categorize_atividade(titulo: Optional[str]) -> str:
+        """
+        Deriva categoria de baixa cardinalidade a partir do título, por prefixo.
+        Prefixo não reconhecido -> 'outro' (fallback defensivo, nunca lança).
+        """
+        if not titulo:
+            return "outro"
+        titulo_norm = titulo.strip().upper()
+        if titulo_norm.startswith("VISITA"):
+            return "visita"
+        if titulo_norm.startswith("INTERVALO"):
+            return "intervalo"
+        if titulo_norm.startswith("QUILOMETRAGEM"):
+            return "quilometragem"
+        return "outro"
 
     # ── InfoMarket methods ────────────────────────────────────────────────────
 
@@ -791,3 +875,97 @@ class DatabaseClient:
         self.logger.info("Inserted %d ATIVMOB estoque records (ignored %d duplicates)", 
                          inserted_count, len(rows) - inserted_count)
         return inserted_count
+
+    # ── ATIVMOB Agendamentos ──────────────────────────────────────────────────
+
+    def _prepare_ativmob_agendamentos_rows(
+        self, records: Iterable[dict], origem: str, store_cnpj: Optional[str] = None
+    ) -> List[dict]:
+        """Converte registros da API de agendamentos (schedules) para linhas do banco."""
+        import json
+
+        now = datetime.utcnow()
+        normalized_cnpj = (store_cnpj or "").split("_")[0] or None
+        rows: List[dict] = []
+
+        for idx, item in enumerate(records):
+            if not isinstance(item, dict):
+                self.logger.warning(
+                    "Skipping ativmob agendamento item[%d]: tipo inválido (%s)", idx, type(item).__name__
+                )
+                continue
+
+            titulo_raw = item.get("titulo_tipo_atividade")
+            titulo = titulo_raw.strip() if isinstance(titulo_raw, str) else None
+
+            row = {
+                "origem": origem,
+                "store_cnpj": normalized_cnpj,
+                "tipo_evento": item.get("tipo_evento"),
+                "codigo_local": item.get("codigo_local"),
+                "nome_agente": item.get("nome_agente"),
+                "login": item.get("login"),
+                "codigo_agente": item.get("codigo_agente"),
+                "dt_referencia": self._parse_iso_date(item.get("dt_referencia")),
+                "hora_referencia": self._parse_time(item.get("hora_referencia")),
+                "dom": self._safe_bool_flag(item.get("dom")),
+                "seg": self._safe_bool_flag(item.get("seg")),
+                "ter": self._safe_bool_flag(item.get("ter")),
+                "qua": self._safe_bool_flag(item.get("qua")),
+                "qui": self._safe_bool_flag(item.get("qui")),
+                "sex": self._safe_bool_flag(item.get("sex")),
+                "sab": self._safe_bool_flag(item.get("sab")),
+                "titulo_tipo_atividade": titulo,
+                "categoria_atividade": self._categorize_atividade(titulo),
+                "raw_json": json.dumps(item, ensure_ascii=False),
+                "created_at": now,
+            }
+            rows.append(row)
+
+        return rows
+
+    def replace_ativmob_agendamentos(
+        self, records: Iterable[dict], origem: str, store_cnpj: Optional[str] = None
+    ) -> Tuple[int, int]:
+        """
+        Substitui o snapshot de agendamentos de UMA origem (capital/interior).
+
+        Igual a replace_estoque: se a API devolver vazio (ou todos os itens
+        inválidos), NÃO apaga o que já existe - protege contra um hiccup da API
+        zerar a tabela sem motivo real, já que não há ACK/incremental de fallback
+        aqui (diferente de ativmob_estoque).
+        """
+        rows = self._prepare_ativmob_agendamentos_rows(records, origem, store_cnpj)
+        if not rows:
+            self.logger.info("No ativmob_agendamentos rows to replace (origem=%s)", origem)
+            return 0, 0
+
+        deleted = 0
+        inserted = 0
+        with self.get_session() as session:
+            result = session.execute(
+                delete(self.ativmob_agendamentos).where(self.ativmob_agendamentos.c.origem == origem)
+            )
+            deleted = result.rowcount or 0
+            session.execute(insert(self.ativmob_agendamentos), rows)
+            inserted = len(rows)
+
+        self.logger.info(
+            "Replaced ativmob_agendamentos (origem=%s). Deleted=%s Inserted=%s", origem, deleted, inserted
+        )
+        return deleted, inserted
+
+    def fetch_ativmob_agendamentos(self, limit: Optional[int] = None) -> List[dict]:
+        """Retorna snapshot atual de agendamentos recorrentes, ordenado por origem/agente/data."""
+        stmt = select(self.ativmob_agendamentos).order_by(
+            self.ativmob_agendamentos.c.origem.asc(),
+            self.ativmob_agendamentos.c.nome_agente.asc(),
+            self.ativmob_agendamentos.c.dt_referencia.asc(),
+        )
+        if limit:
+            stmt = stmt.limit(limit)
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+
+        return [dict(row) for row in rows]

@@ -305,6 +305,85 @@ def _run_ativmob_fonte(nome: str, sufixo: str, event_code: str):
         logger.error("ATIVMOB Job Failed (%s) at %s (duration: %.2f seconds)", nome, job_end.isoformat(), duration)
 
 
+# (nome, sufixo do storeCNPJ). Igual ATIVMOB_FONTES, mas sem event_code porque o
+# endpoint de schedules não tem esse conceito. Hoje só capital está liberado pela
+# ATIVMOB; quando o interior for habilitado, basta adicionar ("interior", "_interior").
+ATIVMOB_AGENDAMENTOS_FONTES = [
+    ("capital", ""),
+]
+
+
+def run_ativmob_agendamentos_job():
+    """Executa o job de ATIVMOB Agendamentos (capital) - snapshot completo, sem ACK."""
+    for nome, sufixo in ATIVMOB_AGENDAMENTOS_FONTES:
+        _run_ativmob_agendamentos_fonte(nome, sufixo)
+
+
+def _run_ativmob_agendamentos_fonte(nome: str, sufixo: str):
+    """
+    Busca o snapshot completo de agendamentos de UMA fonte e substitui
+    (delete+insert escopado por origem) na tabela ativmob_agendamentos.
+
+    Diferente de _run_ativmob_fonte (estoque): sem paginação e sem ACK - é
+    consulta de estado atual, uma chamada resolve tudo.
+    """
+    if shutdown_requested:
+        logger.info("Shutdown requested, skipping job execution")
+        return
+
+    job_start = datetime.now()
+    logger.info("=" * 80)
+    logger.info("ATIVMOB AGENDAMENTOS Job Started (%s) at %s", nome, job_start.isoformat())
+    logger.info("=" * 80)
+
+    try:
+        from ativmob_client import AtivmobClient
+
+        if settings.ativmob_api_key and settings.ativmob_store_cnpj:
+            try:
+                db_client = DatabaseClient(db_url=settings.db_url, echo=False)
+                store_cnpj = settings.ativmob_store_cnpj + sufixo
+                ativmob_client = AtivmobClient(
+                    api_key=settings.ativmob_api_key,
+                    store_cnpj=store_cnpj,
+                    timeout=settings.request_timeout,
+                )
+
+                logger.info("📌 [%s] CNPJ: %s", nome, store_cnpj)
+
+                response = ativmob_client.get_schedules()
+                records = response.get("records", [])
+                logger.info("📥 Recebidos: %d agendamentos", len(records))
+
+                deleted, inserted = db_client.replace_ativmob_agendamentos(
+                    records, origem=nome, store_cnpj=store_cnpj
+                )
+                logger.info("💾 Replace concluído: deletados=%d inseridos=%d", deleted, inserted)
+
+            except Exception as e:
+                logger.warning("ATIVMOB AGENDAMENTOS [%s] skipped due to error: %s", nome, e, exc_info=True)
+        else:
+            logger.info("ATIVMOB credentials not configured, skipping")
+
+        job_end = datetime.now()
+        duration = (job_end - job_start).total_seconds()
+        logger.info("=" * 80)
+        logger.info(
+            "ATIVMOB AGENDAMENTOS Job Completed (%s) at %s (duration: %.2f seconds)",
+            nome, job_end.isoformat(), duration
+        )
+        logger.info("=" * 80)
+
+    except Exception:
+        logger.exception("ATIVMOB AGENDAMENTOS Job failed with exception (%s)", nome)
+        job_end = datetime.now()
+        duration = (job_end - job_start).total_seconds()
+        logger.error(
+            "ATIVMOB AGENDAMENTOS Job Failed (%s) at %s (duration: %.2f seconds)",
+            nome, job_end.isoformat(), duration
+        )
+
+
 def main():
     """Entry point do ETL Worker."""
     logger.info("ETL Worker Starting...")
@@ -342,6 +421,18 @@ def main():
         minute=15,  # 15 minutos após InfoMarket para evitar sobrecarga
         id="ativmob_job",
         name="ATIVMOB Estoque - 3x ao dia",
+    )
+
+    # JOB 4: ATIVMOB Agendamentos - 1x por dia às 05:30
+    # Agendamentos recorrentes mudam bem menos que estoque (só quando ops/RH realoca
+    # agente ou rota); full-replace 1x/dia é suficiente e mais barato que 3x/dia.
+    scheduler.add_job(
+        run_ativmob_agendamentos_job,
+        "cron",
+        hour=5,
+        minute=30,
+        id="ativmob_agendamentos_job",
+        name="ATIVMOB Agendamentos - 1x ao dia",
     )
 
     logger.info("Scheduler configured with %d job(s):", len(scheduler.get_jobs()))

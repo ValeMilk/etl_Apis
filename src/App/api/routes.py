@@ -159,4 +159,26 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
             return data[:effective_limit]
         return data
 
+    # ── ATIVMOB Agendamentos Endpoints ──
+
+    @router.get("/api/v1/ativmob/agendamentos")
+    def listar_ativmob_agendamentos(token: TokenDep, limit: int = 0) -> List[dict]:
+        """
+        Retorna agendamentos recorrentes de agentes de campo (ATIVMOB).
+        Snapshot atual (substituído a cada execução do job ETL) - representa a
+        grade vigente por dia da semana para cada agente/local.
+        Requer autenticação via Bearer token.
+
+        Colunas: id, origem, store_cnpj, tipo_evento, codigo_local, nome_agente,
+                 login, codigo_agente, dt_referencia, hora_referencia,
+                 dom, seg, ter, qua, qui, sex, sab,
+                 titulo_tipo_atividade, categoria_atividade, created_at
+
+        Query params:
+        - limit: número máximo de registros (0 = sem limite, default)
+        """
+        effective_limit = limit if limit > 0 else None
+        logger.info("GET /api/v1/ativmob/agendamentos limit=%s", effective_limit or "ALL")
+        return db_client.fetch_ativmob_agendamentos(limit=effective_limit)
+
     return router

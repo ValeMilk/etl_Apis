@@ -24,6 +24,7 @@ class AtivmobClient:
     """
 
     BASE_URL = "https://api5.ativmob.com.br/v2/orders/delivery"
+    SCHEDULES_BASE_URL = "https://api5.ativmob.com.br/v2/records"
 
     def __init__(self, api_key: str, store_cnpj: str, timeout: int = 30) -> None:
         """
@@ -88,6 +89,42 @@ class AtivmobClient:
 
         except requests.exceptions.RequestException as e:
             self.logger.error("❌ Erro ao buscar eventos ATIVMOB: %s", e, exc_info=True)
+            raise
+
+    # ── Agendamentos (schedules) ─────────────────────────────────────────────
+
+    def get_schedules(self) -> Dict:
+        """
+        Busca o snapshot completo de agendamentos recorrentes (schedules) do storeCNPJ.
+
+        Diferente de get_events/ack_events, este endpoint não usa fila com ACK:
+        cada chamada retorna o conjunto vigente completo, sem paginação conhecida.
+
+        Returns:
+            {"records": [...]}
+        """
+        url = f"{self.SCHEDULES_BASE_URL}/schedules/query/"
+        params = {"storeCNPJ": self.store_cnpj}
+
+        self.logger.info("Buscando agendamentos ATIVMOB: storeCNPJ=%s", self.store_cnpj)
+
+        try:
+            resp = requests.get(
+                url,
+                params=params,
+                headers=self._get_headers(),
+                timeout=self.timeout,
+                verify=False,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            records = data.get("records", [])
+            self.logger.info("✅ ATIVMOB retornou %d agendamentos", len(records))
+            return data
+
+        except requests.exceptions.RequestException as e:
+            self.logger.error("❌ Erro ao buscar agendamentos ATIVMOB: %s", e, exc_info=True)
             raise
 
     # ── ACK (confirmar eventos processados) ───────────────────────────────────
