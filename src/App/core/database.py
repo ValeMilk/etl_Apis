@@ -189,6 +189,26 @@ class DatabaseClient:
             Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
         )
 
+        self.ativmob_km = Table(
+            "ativmob_km",
+            self.metadata,
+            Column("id", Integer, primary_key=True, autoincrement=True),
+            Column("event_id", String(50), nullable=False, unique=True),  # ID único do evento
+            Column("store_cnpj", String(20), nullable=True),
+            Column("event_code", String(50), nullable=True),
+            Column("event_title", String(255), nullable=True),
+            Column("event_dth", DateTime, nullable=True),
+            Column("agent_code", String(50), nullable=True),
+            Column("agent_name", String(255), nullable=True),
+            Column("codigo_roteiro", String(100), nullable=True),
+            Column("codigo_orcamento", String(100), nullable=True),
+            Column("dist_estim", Float, nullable=True),
+            Column("tempo_estim", String(50), nullable=True),
+            # JSON bruto do evento para auditoria/schema drift
+            Column("raw_json", Text, nullable=True),
+            Column("created_at", DateTime, default=datetime.utcnow, nullable=False),
+        )
+
         self.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine, autoflush=False, autocommit=False, future=True)
 
@@ -962,6 +982,86 @@ class DatabaseClient:
             self.ativmob_agendamentos.c.nome_agente.asc(),
             self.ativmob_agendamentos.c.dt_referencia.asc(),
         )
+        if limit:
+            stmt = stmt.limit(limit)
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+
+        return [dict(row) for row in rows]
+
+    # ── ATIVMOB Km (conclusão de roteiro) ────────────────────────────────────
+
+    def insert_ativmob_km(self, events: Iterable[dict]) -> int:
+        """
+        Insere eventos de conclusão de roteiro (Km/distância percorrida) ATIVMOB.
+
+        Mesmo padrão de insert_ativmob_estoque (fila com ACK, dedupe por
+        event_id), mas sem form[] - os campos já vêm planos no evento.
+        Ignora duplicados (event_id único). Retorna número de registros inseridos.
+        """
+        import json
+
+        rows = []
+        now = datetime.utcnow()
+
+        for event in events:
+            event_id = event.get("event_id")
+            if not event_id:
+                self.logger.warning("Skipping ATIVMOB km event without event_id")
+                continue
+
+            event_dth_str = event.get("event_dth")
+            try:
+                event_dth = datetime.strptime(event_dth_str, "%Y-%m-%d %H:%M:%S") if event_dth_str else None
+            except (ValueError, TypeError):
+                event_dth = None
+
+            # Mesmo tratamento de insert_ativmob_estoque: sufixo _interior estoura VARCHAR(20)
+            store_cnpj = (event.get("storeCNPJ") or "").split("_")[0] or None
+
+            row = {
+                "event_id": str(event_id),
+                "store_cnpj": store_cnpj,
+                "event_code": event.get("event_code"),
+                "event_title": event.get("event_title"),
+                "event_dth": event_dth,
+                "agent_code": event.get("agent_code"),
+                "agent_name": event.get("agent_name"),
+                "codigo_roteiro": event.get("codigo_roteiro"),
+                "codigo_orcamento": event.get("codigo_orcamento"),
+                "dist_estim": self._safe_float(event.get("dist_estim"), 0.0),
+                "tempo_estim": event.get("tempo_estim"),
+                "raw_json": json.dumps(event, ensure_ascii=False),
+                "created_at": now,
+            }
+            rows.append(row)
+
+        if not rows:
+            self.logger.info("No ATIVMOB km rows to insert")
+            return 0
+
+        inserted_count = 0
+        with self.get_session() as session:
+            for row in rows:
+                try:
+                    stmt = insert(self.ativmob_km).values(**row)
+                    session.execute(stmt)
+                    inserted_count += 1
+                except Exception as e:
+                    if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                        self.logger.debug("Skipping duplicate event_id=%s", row.get("event_id"))
+                    else:
+                        self.logger.warning("Error inserting ATIVMOB km event_id=%s: %s", row.get("event_id"), e)
+
+        self.logger.info(
+            "Inserted %d ATIVMOB km records (ignored %d duplicates)", inserted_count, len(rows) - inserted_count
+        )
+        return inserted_count
+
+    def fetch_ativmob_km(self, limit: Optional[int] = None) -> List[dict]:
+        """Retorna eventos de conclusão de roteiro (Km) ordenados por event_dth DESC."""
+        stmt = select(self.ativmob_km).order_by(self.ativmob_km.c.event_dth.desc())
         if limit:
             stmt = stmt.limit(limit)
 

@@ -384,6 +384,132 @@ def _run_ativmob_agendamentos_fonte(nome: str, sufixo: str):
         )
 
 
+# (nome, sufixo do storeCNPJ). Igual ATIVMOB_FONTES, mas para o event_code
+# "conclusao_roteiro" (Km/distância percorrida), que grava em ativmob_km.
+ATIVMOB_KM_FONTES = [
+    ("capital", ""),
+    ("interior", "_interior"),
+]
+
+
+def run_ativmob_km_job():
+    """Executa o job de ATIVMOB Km (conclusão de roteiro) - capital e interior - 3x por dia."""
+    for nome, sufixo in ATIVMOB_KM_FONTES:
+        _run_ativmob_km_fonte(nome, sufixo)
+
+
+def _run_ativmob_km_fonte(nome: str, sufixo: str):
+    """
+    Esvazia a fila de eventos "conclusao_roteiro" (Km/distância percorrida) de
+    UMA fonte ATIVMOB (get -> insert -> ACK).
+
+    Mesmo padrão de _run_ativmob_fonte (estoque), duplicado aqui em vez de
+    generalizado para não arriscar o job de estoque já em produção - só muda
+    o event_code e a tabela de destino (ativmob_km via insert_ativmob_km).
+    """
+    if shutdown_requested:
+        logger.info("Shutdown requested, skipping job execution")
+        return
+
+    job_start = datetime.now()
+    logger.info("=" * 80)
+    logger.info("ATIVMOB KM Job Started (%s) at %s", nome, job_start.isoformat())
+    logger.info("=" * 80)
+
+    try:
+        from ativmob_client import AtivmobClient
+
+        if settings.ativmob_api_key and settings.ativmob_store_cnpj:
+            try:
+                db_client = DatabaseClient(db_url=settings.db_url, echo=False)
+                store_cnpj = settings.ativmob_store_cnpj + sufixo
+                ativmob_client = AtivmobClient(
+                    api_key=settings.ativmob_api_key,
+                    store_cnpj=store_cnpj,
+                    timeout=settings.request_timeout,
+                )
+
+                logger.info("📌 [%s] CNPJ: %s | Event: conclusao_roteiro", nome, store_cnpj)
+
+                total_events_fetched = 0
+                total_events_inserted = 0
+                batch_number = 0
+                max_batches = 50  # Limite de segurança (50 batches * 100 = 5000 eventos max)
+
+                logger.info("🔄 Iniciando loop de extração (até retornar < 100 eventos)...")
+
+                while batch_number < max_batches:
+                    batch_number += 1
+
+                    logger.info("─" * 80)
+                    logger.info("📦 BATCH #%d - Buscando eventos...", batch_number)
+                    response = ativmob_client.get_events(event_code="conclusao_roteiro")
+                    events = response.get("events", [])
+                    max_num_events = response.get("maxNumEvents", 100)
+
+                    if not events:
+                        logger.info("✅ Nenhum evento pendente")
+                        break
+
+                    events_count = len(events)
+                    total_events_fetched += events_count
+                    logger.info("📥 Recebidos: %d eventos", events_count)
+
+                    inserted_count = db_client.insert_ativmob_km(events)
+                    total_events_inserted += inserted_count
+                    logger.info(
+                        "💾 Inseridos: %d eventos (ignorados %d duplicatas)",
+                        inserted_count, events_count - inserted_count
+                    )
+
+                    event_ids = [e.get("event_id") for e in events if e.get("event_id")]
+                    if event_ids:
+                        ack_success = ativmob_client.ack_events(event_ids)
+                        if ack_success:
+                            logger.info("✅ ACK enviado: %d eventos marcados como processados", len(event_ids))
+                        else:
+                            logger.warning("⚠️ Falha no ACK - eventos podem retornar")
+
+                    logger.info(
+                        "📊 Total acumulado: %d eventos recebidos | %d inseridos",
+                        total_events_fetched, total_events_inserted
+                    )
+
+                    if events_count < max_num_events:
+                        logger.info(
+                            "✅ Última batch retornou %d eventos (< %d) - Sem mais eventos!",
+                            events_count, max_num_events
+                        )
+                        break
+
+                    logger.info("🔄 Batch retornou %d eventos = continuar para próxima batch", max_num_events)
+
+                logger.info("")
+                logger.info("📦 Total de batches processadas: %d", batch_number)
+                logger.info("📥 Total de eventos recebidos: %d", total_events_fetched)
+                logger.info("💾 Total de eventos inseridos: %d", total_events_inserted)
+
+                if batch_number >= max_batches:
+                    logger.warning("⚠️ Atingido limite de %d batches - pode haver mais eventos", max_batches)
+
+            except Exception as e:
+                logger.warning("ATIVMOB KM [%s] skipped due to error: %s", nome, e, exc_info=True)
+        else:
+            logger.info("ATIVMOB credentials not configured, skipping")
+
+        job_end = datetime.now()
+        duration = (job_end - job_start).total_seconds()
+        logger.info("=" * 80)
+        logger.info("ATIVMOB KM Job Completed (%s) at %s (duration: %.2f seconds)", nome, job_end.isoformat(), duration)
+        logger.info("=" * 80)
+
+    except Exception:
+        logger.exception("ATIVMOB KM Job failed with exception (%s)", nome)
+        job_end = datetime.now()
+        duration = (job_end - job_start).total_seconds()
+        logger.error("ATIVMOB KM Job Failed (%s) at %s (duration: %.2f seconds)", nome, job_end.isoformat(), duration)
+
+
 def main():
     """Entry point do ETL Worker."""
     logger.info("ETL Worker Starting...")
@@ -433,6 +559,16 @@ def main():
         minute=30,
         id="ativmob_agendamentos_job",
         name="ATIVMOB Agendamentos - 1x ao dia",
+    )
+
+    # JOB 5: ATIVMOB Km (conclusão de roteiro) - 3x por dia (00h, 12h, 16h)
+    scheduler.add_job(
+        run_ativmob_km_job,
+        "cron",
+        hour="0,12,16",
+        minute=25,  # 10 minutos após o ATIVMOB Estoque (minute=15), para não competir
+        id="ativmob_km_job",
+        name="ATIVMOB Km (conclusão de roteiro) - 3x ao dia",
     )
 
     logger.info("Scheduler configured with %d job(s):", len(scheduler.get_jobs()))

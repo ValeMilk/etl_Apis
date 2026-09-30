@@ -181,4 +181,21 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
         logger.info("GET /api/v1/ativmob/agendamentos limit=%s", effective_limit or "ALL")
         return db_client.fetch_ativmob_agendamentos(limit=effective_limit)
 
+    @router.get("/api/v1/ativmob/km")
+    def listar_ativmob_km(token: TokenDep, limit: int = 0) -> List[dict]:
+        """
+        Retorna eventos de conclusão de roteiro (Km/distância percorrida) ATIVMOB.
+        Requer autenticação via Bearer token.
+
+        Colunas: id, event_id, store_cnpj, event_code, event_title, event_dth,
+                 agent_code, agent_name, codigo_roteiro, codigo_orcamento,
+                 dist_estim, tempo_estim, created_at
+
+        Query params:
+        - limit: número máximo de registros (0 = sem limite, default)
+        """
+        effective_limit = limit if limit > 0 else None
+        logger.info("GET /api/v1/ativmob/km limit=%s", effective_limit or "ALL")
+        return db_client.fetch_ativmob_km(limit=effective_limit)
+
     return router
