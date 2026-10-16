@@ -318,6 +318,84 @@ class DatabaseClient:
 
         return [dict(row) for row in rows]
 
+    def fetch_giro_estoque(self, limit: Optional[int] = None) -> List[dict]:
+        """
+        Retorna giro/cobertura de estoque (ValeMilk): média de venda diária dos
+        últimos 30 dias, estoque atual, DDE (dias de estoque, = estoque / média
+        diária) e dias sem vender, por loja + produto.
+        """
+        query = """
+            WITH vendas_diarias AS (
+                SELECT
+                    loja_id,
+                    MAX(nome_loja) AS nome_loja,
+                    cod_interno,
+                    MAX(produto) AS produto,
+                    data::DATE AS data_venda,
+                    SUM(qtd) AS qtd_dia
+                FROM public.vendas
+                WHERE data >= CURRENT_DATE - INTERVAL '29 days'
+                  AND data < CURRENT_DATE + INTERVAL '1 day'
+                GROUP BY loja_id, cod_interno, data::DATE
+            ),
+
+            vendas_30_dias AS (
+                SELECT
+                    loja_id,
+                    MAX(nome_loja) AS nome_loja,
+                    cod_interno,
+                    MAX(produto) AS produto,
+                    SUM(qtd_dia) AS qtd_vendida_30d,
+                    COUNT(*) FILTER (WHERE qtd_dia > 0) AS dias_validos,
+                    MAX(data_venda) FILTER (WHERE qtd_dia > 0) AS ultima_venda
+                FROM vendas_diarias
+                GROUP BY loja_id, cod_interno
+            ),
+
+            estoque_atual AS (
+                SELECT
+                    loja_id,
+                    codigo_produto,
+                    SUM(estq_loja) AS estoque_loja,
+                    SUM(estq_avaria) AS estoque_avaria
+                FROM public.estoque
+                GROUP BY loja_id, codigo_produto
+            )
+
+            SELECT
+                v.loja_id,
+                v.nome_loja,
+                v.cod_interno,
+                v.produto,
+                v.qtd_vendida_30d,
+                v.dias_validos,
+                ROUND(v.qtd_vendida_30d::NUMERIC / NULLIF(v.dias_validos, 0), 2) AS media_venda_dia,
+                e.estoque_loja,
+                e.estoque_avaria,
+                ROUND(
+                    e.estoque_loja::NUMERIC /
+                    NULLIF(v.qtd_vendida_30d::NUMERIC / NULLIF(v.dias_validos, 0), 0),
+                    1
+                ) AS dde,
+                v.ultima_venda,
+                CURRENT_DATE - v.ultima_venda AS dias_sem_vender
+            FROM vendas_30_dias v
+            INNER JOIN estoque_atual e
+                ON v.loja_id = e.loja_id
+                AND v.cod_interno::TEXT = e.codigo_produto::TEXT
+            ORDER BY v.nome_loja, v.qtd_vendida_30d DESC
+        """
+        if limit:
+            query += " LIMIT :limit"
+            stmt = text(query).bindparams(limit=limit)
+        else:
+            stmt = text(query)
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+
+        return [dict(row) for row in rows]
+
     # ── ValeFish methods ──
 
     def upsert_vendas_valefish(self, vendas: Iterable[dict]) -> Tuple[int, int]:

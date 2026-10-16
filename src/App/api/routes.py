@@ -91,6 +91,24 @@ def create_router(db_client: DatabaseClient) -> APIRouter:
         logger.info("GET /api/v1/estoque?limit=%d", limit)
         return db_client.fetch_estoque()[:limit]
 
+    @router.get("/api/v1/giro-estoque")
+    def listar_giro_estoque(token: TokenDep, limit: int = 0) -> List[dict]:
+        """
+        Retorna giro/cobertura de estoque (ValeMilk): média de venda diária dos
+        últimos 30 dias, estoque atual, DDE (dias de estoque) e dias sem vender,
+        por loja + produto. Requer autenticação via Bearer token.
+
+        Colunas: loja_id, nome_loja, cod_interno, produto, qtd_vendida_30d,
+                 dias_validos, media_venda_dia, estoque_loja, estoque_avaria,
+                 dde, ultima_venda, dias_sem_vender
+
+        Query params:
+        - limit: número máximo de registros (0 = sem limite, default)
+        """
+        effective_limit = limit if limit > 0 else None
+        logger.info("GET /api/v1/giro-estoque limit=%s", effective_limit or "ALL")
+        return db_client.fetch_giro_estoque(limit=effective_limit)
+
     # ── ValeFish Endpoints ──
 
     @router.get("/api/v1/vendas/valefish")
