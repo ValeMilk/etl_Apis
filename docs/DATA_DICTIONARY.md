@@ -139,6 +139,114 @@ Como consultar:
 - Cobertura: `validity_start_date` vai de 03/03/2026 (primeira carga) até encartes futuros já cadastrados;
   não há dados de antes disso.
 
+### Racional para perguntas de encartes (ex.: "histórico de encartes na rede Cometa de requeijão 400g")
+
+Esta view é o mesmo tratamento da consulta em linguagem M do Power BI da Vale Milk, em três passos, dentro
+de cada grupo `(rede, marca, item, encarte, vigência)`: (1) achar o menor e o maior `value`; (2) se são
+diferentes, descartar as linhas com o maior (é o preço de prateleira que a InfoMarket repete por loja);
+(3) das lojas da rede que sobraram, ficar com uma linha por preço (a mais recente). Por isso **nunca** se
+soma, conta ou tira média em `infomarket`: o resultado sai ~10x inflado e com o preço padrão misturado.
+
+Como raciocinar, nesta ordem:
+
+1. **Separe a pergunta em cinco dimensões.** REDE (`network_name`), CATEGORIA e GRAMATURA (as duas vivem
+   dentro de `description`), MARCA (`brand_name`; `VALEMILK` e `VALEFISH` são as marcas do grupo, as demais
+   são concorrentes; `VALEDOURADO` NÃO é do grupo) e PERÍODO. Sem período na pergunta, use o histórico inteiro
+   (desde 03/03/2026) e diga isso na resposta.
+2. **Resolva a rede antes de tudo**, sem acento e em maiúsculas (ver acima), e confira com `SELECT DISTINCT
+   network_name`. O `LIKE '%X%'` pode casar VÁRIAS redes: `'%ATACADAO%'` devolve `ATACADÃO`, `ATACADÃO CURIÓ
+   MIX` e `LAG ATACADÃO`, que são redes diferentes. Depois do DISTINCT, filtre a escolhida com
+   `network_name = '<nome exato>'`; se houver mais de uma plausível, responda pela principal e cite as outras.
+   "Cometa" existe como `COMETA` (uma rede só; os nomes de loja, como "COMETA MONTESE" ou "GUARARAPES",
+   aparecem só dentro de `leaflet_name`).
+3. **Categoria e gramatura saem de `description`, não de EAN.** Não há coluna de categoria; `eans` é nulo em
+   ~8% das linhas e não casa com `vendas` (lá o EAN é sempre nulo). O texto é padronizado em maiúsculas:
+   `<CATEGORIA> [CREMOSO] <MARCA> <VARIANTE> <EMBALAGEM> <GRAMATURA>`, ex.:
+   `REQUEIJÃO CREMOSO VALEMILK TRADICIONAL POTE 400G`, `IOGURTE POLPA BETÂNIA SABORES BANDEJA 540G`.
+   - Categoria = primeira palavra. As que existem (22/10/2026): IOGURTE, REQUEIJÃO, BEBIDA (láctea), FILÉ
+     (peixe, ValeFish), MANTEIGA, QUEIJO, DOCE (de leite), e raras (CAPPUCCINO, COALHADA, ISCAS, SHAKE,
+     TILÁPIA, ACHOCOLATADO, LEITE, CREME...). Filtre sem acento e com `trim` (13 linhas começam com espaço e
+     1 está grafada "BEBIBA"):
+     `translate(upper(trim(description)), 'ÃÁÀÂÉÊÍÓÔÕÚÇ', 'AAAAEEIOOOUC') LIKE 'REQUEIJAO%'`
+     (use `'%REQUEIJ%'` só se quiser pegar também "MISTURA DE REQUEIJÃO"). "Iogurte" em sentido amplo
+     inclui BEBIDA LÁCTEA fermentada e LEITE FERMENTADO: decida se entram e declare.
+   - Gramatura = último token, nos formatos `400G`, `200G`, `1.15KG`, `250ML`, `1L` (ponto como decimal,
+     às vezes com espaço: "400 G"). Compare sem espaços e **ancorado no fim**, senão `400G` casa `1400G`:
+     `regexp_replace(upper(description), '\s', '', 'g') ~ '[^0-9.,]400G$'`.
+     Exceções: queijo coalho e filés de peixe são vendidos por PESO VARIÁVEL, a descrição termina em `KG`
+     sem número (~1.300 linhas) e `value` é R$/kg, então não use filtro de gramatura; algumas descrições
+     têm gramatura dupla ("175/170G", "800G/850G"), ponto final ("180G.") ou lixo ("540G APAGAR"). Se o
+     filtro ancorado devolver pouco, confira com `LIKE '%170G%'`.
+   - Variante (TRADICIONAL, LIGHT, ZERO LACTOSE) e embalagem (POTE, COPO, VIDRO, BISNAGA) também estão no
+     texto; só filtre por elas se a pergunta pedir. "Requeijão 400g" inclui tradicional e light.
+4. **Monte o histórico como uma linha por oferta**, agrupando por
+   `(validity_start_date, validity_finish_date, trim(leaflet_name), leaflet_type, brand_name, description,
+   value, dynamic)` com `COUNT(DISTINCT leaflet_id) AS encartes`, em ordem de `validity_start_date`. O MESMO
+   encarte sai com 2+ `leaflet_id` quando a rede imprime uma versão por loja/praça (ex.: "CARNES" do Cometa):
+   conte `leaflet_id` distintos, nunca linhas. `leaflet_name` é o nome comercial do encarte ("EXPLOSÃO DE
+   OFERTAS", "CLUBE TEM MAIS PRA VOCÊ"), não um identificador estável: o mesmo encarte aparece com e sem
+   espaço final e com variantes ("CARNES", "CARNES ", "CARNES COMETA", "TEM MAIS PRA/PARA VOCÊ"), por isso
+   o `trim`. `leaflet_type` é o formato: SEMANAL, FIM DE SEMANA, FRIGORIFICO (o tabloide "CARNES" de 1-2
+   dias que também leva laticínios), FORNECEDOR (encarte temático/patrocinado, com nome de fabricante ou
+   festival; 73% têm uma marca só, mas pode ter várias, ex.: "BATAVO" no Cometa tem 7 marcas), ABASTECEDOR,
+   DIARIO, INAUGURAÇÃO, HORTIFRUTI. Duração média: ~3 dias por encarte.
+5. **Leia `dynamic` antes de comparar preço.** `OFERTA_DE_POR` é o preço de oferta aberto a todos;
+   `PROGRAMA_FIDELIDADE` é preço de clube/cartão (no Cometa, "Clube Tem Mais Pra Você"), `DESCONTO_APP`
+   só no aplicativo e `DESCONTO_NO_CARTAO_PROPRIO` só no cartão da rede: não compare esses com o preço
+   aberto sem dizer. `DESCONTO_NA_CAIXA_FECHADA` é preço de atacado por caixa e `COMBO` é pacote: fora da
+   comparação de varejo. Em `A_PARTIR_DE_X_UNIDADES` e `LEVE_MAIS_PAGUE_MENOS`, `value` é sempre o preço
+   UNITÁRIO na condição ("LEVE 8 PAGUE R$ 20.00" -> `value` 2,50); `minimum_quantity` é 1 por padrão
+   (inclusive em metade das A_PARTIR_DE_X_UNIDADES) e `details` é texto livre, vazio em ~1/3 das
+   LEVE_MAIS_PAGUE_MENOS: leia os dois como indicativos, não como regra.
+6. **Resuma por marca** sobre o mesmo filtro: nº de encartes (`COUNT(DISTINCT leaflet_id)`), nº de períodos
+   de vigência distintos, primeiro e último encarte, preço mínimo, médio e máximo, e quantos ENCARTES foram
+   de clube (também `COUNT(DISTINCT leaflet_id)`; nunca misture contagem de linhas com contagem de encartes
+   na mesma frase). Destaque as marcas do grupo contra os concorrentes: quem está mais presente, a que preço,
+   qual a diferença para o preço da Vale Milk, e a recência (último encarte e preço mais recente de cada
+   marca). Quando categoria+gramatura reúne SKUs de segmentos diferentes (iogurte 170g: natural, líquido,
+   whey, de R$ 2,99 a 7,99), quebre também por `description` antes de comparar preço entre marcas; média por
+   marca ali engana.
+7. **Resultado vazio é resposta, não erro.** Se o filtro devolver zero linhas, diga isso e mostre (a) o
+   histórico fora do período e (b) a gramatura que a rede de fato anuncia na categoria (ex.: o Atacadão
+   anuncia manteiga quase só em 500g), em vez de afrouxar o filtro em silêncio.
+8. **Na resposta, declare sempre:** a rede exata encontrada, o filtro de `description` usado, o período
+   coberto, que "encarte" = `leaflet_id` distinto, que os preços são os ANUNCIADOS depois do tratamento (sem
+   preço padrão), e que a base começa em 03/03/2026. `created_at` é a hora da recarga (3x/dia), nunca a
+   data do encarte: datas vêm só de `validity_*`.
+
+Modelo testado em 22/10/2026 (histórico):
+
+```sql
+SELECT validity_start_date AS inicio, validity_finish_date AS fim, trim(leaflet_name) AS encarte,
+       leaflet_type AS tipo, brand_name AS marca, description AS produto, value AS preco,
+       dynamic AS oferta, COUNT(DISTINCT leaflet_id) AS encartes
+FROM infomarket_tratado
+WHERE network_name = 'COMETA'
+  AND translate(upper(trim(description)), 'ÃÁÀÂÉÊÍÓÔÕÚÇ', 'AAAAEEIOOOUC') LIKE 'REQUEIJAO%'
+  AND regexp_replace(upper(description), '\s', '', 'g') ~ '[^0-9.,]400G$'
+  -- AND validity_finish_date >= '<início>' AND validity_start_date <= '<fim>'
+GROUP BY 1,2,3,4,5,6,7,8
+ORDER BY 1 DESC, 5;
+```
+
+Resumo por marca (mesmo `WHERE`):
+
+```sql
+SELECT brand_name AS marca, COUNT(DISTINCT leaflet_id) AS encartes,
+       COUNT(DISTINCT (validity_start_date, validity_finish_date)) AS periodos,
+       MIN(validity_start_date) AS primeiro, MAX(validity_finish_date) AS ultimo,
+       ROUND(MIN(value)::numeric, 2) AS preco_min, ROUND(AVG(value)::numeric, 2) AS preco_medio,
+       ROUND(MAX(value)::numeric, 2) AS preco_max,
+       COUNT(DISTINCT leaflet_id) FILTER (WHERE dynamic = 'PROGRAMA_FIDELIDADE') AS encartes_clube
+FROM infomarket_tratado
+WHERE <mesmo filtro>
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+No Cometa, requeijão 400g (histórico até 22/10/2026) devolve 8 marcas; SABOR & VIDA lidera em encartes
+(43), VALEMILK vem em seguida (31, preço de R$ 10,99 a 11,99, 8 encartes de clube) e MARANGUAPE (25). É
+este o formato de resposta esperado: tabela do histórico + leitura por marca com a Vale Milk em destaque.
+
 ## `ativmob_estoque`
 
 Eventos de estoque/vencimento da ATIVMOB (promotores em campo). Fila com ACK — nunca é

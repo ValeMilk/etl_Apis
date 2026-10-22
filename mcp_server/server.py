@@ -94,7 +94,10 @@ mcp = FastMCP(
         "(3) `ean` em vendas/estoque é sempre NULL; "
         "(4) `vendas_valefish`/`estoque_valefish` espelham as tabelas do ValeMilk; "
         "(5) `infomarket` é recarregada do zero 3x/dia e é CRUA (uma linha por loja, com preço padrão): "
-        "para encartes e preços de concorrentes use a view `infomarket_tratado`, nunca a tabela crua. "
+        "para encartes e preços de concorrentes use a view `infomarket_tratado`, nunca a tabela crua; "
+        "antes de responder qualquer pergunta de encarte (histórico, preço, presença de marca numa rede), "
+        "leia o racional e o SQL modelo em `descrever_tabela('infomarket_tratado')`: rede sem acento, "
+        "categoria e gramatura pela `description`, encarte = `leaflet_id` distinto, `dynamic` antes de comparar preço. "
         "Só SELECT é aceito; filtre por período e use LIMIT/agregações em tabelas grandes."
     ),
 )
