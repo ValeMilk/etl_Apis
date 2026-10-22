@@ -8,7 +8,7 @@
 > JSONB), e os relacionamentos (ex: `vendas.cod_interno` ↔ `estoque.codigo_produto`) são
 > lógicos, resolvidos nas consultas, não por constraint.
 
-## Visão geral das 8 tabelas
+## Visão geral das 8 tabelas e 1 view
 
 | Tabela | Fonte | Estratégia de carga | Job responsável |
 |---|---|---|---|
@@ -20,6 +20,7 @@
 | `ativmob_estoque` | API ATIVMOB (fila + ACK) | Insert append-only, dedupe por `event_id` | `run_ativmob_job` (00:15/12:15/16:15) |
 | `ativmob_agendamentos` | API ATIVMOB (consulta) | Delete por `origem` + insert (replace parcial) | `run_ativmob_agendamentos_job` (05:30 diário) |
 | `ativmob_km` | API ATIVMOB (fila + ACK) | Insert append-only, dedupe por `event_id` | `run_ativmob_km_job` (00:25/12:25/16:25) |
+| `infomarket_tratado` | View sobre `infomarket` (mesmo tratamento do BI) | Calculada a cada consulta, sem carga própria | — (`sql/infomarket_tratado.sql`) |
 
 ---
 
@@ -101,8 +102,38 @@ delete por período, é a tabela inteira).
 | `store_cnpj` | VARCHAR(20) | sim | CNPJ da loja concorrente |
 | `created_at` | TIMESTAMP | não | Quando a linha foi gravada |
 
-Consumo pelo BI normalmente não é direto nessa tabela — é via `fetch_infomarket_tratado()`
-(exposta em `GET /api/v1/infomarket`), que remove preços "padrão" e deduplica por rede.
+**Não use esta tabela para análise de encartes/preços** — ela tem uma linha por loja e inclui o preço
+"padrão", então contagens e médias saem cerca de 10x infladas. O BI consome o dado tratado, via
+`fetch_infomarket_tratado()` (exposta em `GET /api/v1/infomarket`); no banco, o equivalente é a view
+`infomarket_tratado` (próxima seção). Use `infomarket` crua só para olhar loja a loja.
+
+## `infomarket_tratado` (view)
+
+**É a fonte certa para encartes e preços de concorrentes.** Mesmas colunas e tipos de `infomarket`,
+exceto `store_id`, `store_name` e `store_cnpj` (as lojas da mesma rede viram uma linha só). Definida em
+`sql/infomarket_tratado.sql`, espelho de `fetch_infomarket_tratado()`; não tem carga própria.
+
+Regras do tratamento, nesta ordem, dentro de cada grupo
+`(network_id, brand_id, item_id, leaflet_id, validity_start_date, validity_finish_date)`:
+
+1. **Preço padrão:** se o grupo tem mais de um `value`, as linhas com o maior valor são descartadas
+   (é o preço de prateleira); sobra o preço da oferta. Grupo com um único valor fica como está.
+2. **Deduplicação por rede:** uma linha por grupo + `value`, mantendo a de `created_at` mais recente.
+
+Efeito medido (marca MARANGUAPE, encartes vigentes nos 3 meses até 22/10/2026): 7.821 linhas em
+`infomarket` → 775 em `infomarket_tratado`. Na tabela inteira: 236.862 → 17.039 linhas (94 redes, 195 marcas).
+
+Como consultar:
+
+- `brand_name` e `network_name` são texto em MAIÚSCULAS (ex.: `MARANGUAPE`, `SUPERMERCADO GUARA`). O usuário
+  escreve "Guará"; busque com `ILIKE '%guara%'` e confira antes com
+  `SELECT DISTINCT network_name FROM infomarket_tratado WHERE network_name ILIKE '%guara%'`.
+- "Encartes de um período" = encartes **vigentes** nele:
+  `validity_finish_date >= <início> AND validity_start_date <= <fim>`.
+- `leaflet_name` identifica o encarte; uma rede pode ter vários no mesmo período. `value` é o preço
+  anunciado e `dynamic` o tipo de oferta (ex.: `OFERTA_DE_POR`).
+- Cobertura: `validity_start_date` vai de 03/03/2026 (primeira carga) até encartes futuros já cadastrados;
+  não há dados de antes disso.
 
 ## `ativmob_estoque`
 

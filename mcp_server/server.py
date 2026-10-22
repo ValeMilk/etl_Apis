@@ -67,7 +67,8 @@ mcp = FastMCP(
         "(2) `estoque` e `estoque_valefish` são snapshot atual, não histórico; "
         "(3) `ean` em vendas/estoque é sempre NULL; "
         "(4) `vendas_valefish`/`estoque_valefish` espelham as tabelas do ValeMilk; "
-        "(5) `infomarket` é recarregada do zero 3x/dia. "
+        "(5) `infomarket` é recarregada do zero 3x/dia e é CRUA (uma linha por loja, com preço padrão): "
+        "para encartes e preços de concorrentes use a view `infomarket_tratado`, nunca a tabela crua. "
         "Só SELECT é aceito; filtre por período e use LIMIT/agregações em tabelas grandes."
     ),
 )
@@ -136,12 +137,13 @@ def _dictionary_overview() -> Dict[str, Dict[str, str]]:
     return overview
 
 
-def _real_tables(conn: psycopg.Connection) -> List[str]:
+def _real_tables(conn: psycopg.Connection) -> Dict[str, str]:
+    """Tabelas e views do schema public: {nome: "tabela" | "view"}."""
     rows = conn.execute(
-        "SELECT table_name FROM information_schema.tables "
-        "WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name"
+        "SELECT table_name, table_type FROM information_schema.tables "
+        "WHERE table_schema = 'public' AND table_type IN ('BASE TABLE', 'VIEW') ORDER BY table_name"
     ).fetchall()
-    return [r[0] for r in rows]
+    return {name: "view" if kind == "VIEW" else "tabela" for name, kind in rows}
 
 
 @mcp.resource("dicionario://bi_cometa", mime_type="text/markdown")
@@ -152,7 +154,7 @@ def dicionario() -> str:
 
 @mcp.tool()
 def listar_tabelas() -> Dict[str, Any]:
-    """Lista as tabelas do banco com fonte, estratégia de carga, job e nº aproximado de linhas."""
+    """Lista as tabelas e views do banco com fonte, estratégia de carga, job e nº aproximado de linhas."""
     overview = _dictionary_overview()
     with _connect() as conn:
         stats = {
@@ -162,9 +164,13 @@ def listar_tabelas() -> Dict[str, Any]:
         tables = _real_tables(conn)
     return {
         "tabelas": [
-            {"tabela": t, **overview.get(t, {}), "linhas_aprox": stats.get(t)} for t in tables
+            {"tabela": t, "tipo": kind, **overview.get(t, {}), "linhas_aprox": stats.get(t)}
+            for t, kind in tables.items()
         ],
-        "observacao": "linhas_aprox vem das estatísticas do Postgres (n_live_tup), não é COUNT exato.",
+        "observacao": (
+            "linhas_aprox vem das estatísticas do Postgres (n_live_tup), não é COUNT exato; "
+            "views não têm estatística (null)."
+        ),
     }
 
 
