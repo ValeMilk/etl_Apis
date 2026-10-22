@@ -12,15 +12,17 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r /app/mcp_server/requirements.txt
 
 # O servidor lê o dicionário em ../docs relativo a ele (/app/docs).
-COPY mcp_server/server.py /app/mcp_server/server.py
+COPY mcp_server/server.py mcp_server/oauth_provider.py /app/mcp_server/
 COPY docs/DATA_DICTIONARY.md /app/docs/DATA_DICTIONARY.md
 
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+# /data guarda o SQLite do OAuth (clientes, códigos, tokens); no compose é um volume nomeado.
+RUN useradd -m -u 1000 appuser && mkdir /data && chown -R appuser:appuser /app /data
 USER appuser
 
 ENV MCP_TRANSPORT=http
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8001
+ENV MCP_OAUTH_DB=/data/oauth.db
 
 EXPOSE 8001
 

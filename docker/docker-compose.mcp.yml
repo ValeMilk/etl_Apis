@@ -8,6 +8,8 @@
 # Variáveis lidas do .env (a raiz do BI_COMETA), só estas duas entram no container:
 #   MCP_DB_URL=postgresql://bi_mcp:<senha>@bi_cometa_db:5432/bi_cometa
 #   MCP_AUTH_TOKENS=nome:<token>,outro:<token>     # token com 24+ caracteres, ex.: openssl rand -hex 32
+#   MCP_OAUTH_ALLOWED_EMAILS=fulano@empresa.com    # login OAuth (conector do Claude): quem pode entrar, via Rebaixa
+# Opcionais: MCP_PUBLIC_URL (padrão https://infovale.valemilk.com.br), MCP_OAUTH_LOGIN_URL, MCP_OAUTH_ALLOWED_ROLES.
 services:
   mcp:
     build:
@@ -18,6 +20,12 @@ services:
     environment:
       MCP_DB_URL: ${MCP_DB_URL:?defina MCP_DB_URL no .env}
       MCP_AUTH_TOKENS: ${MCP_AUTH_TOKENS:?defina MCP_AUTH_TOKENS no .env}
+      MCP_OAUTH_ALLOWED_EMAILS: ${MCP_OAUTH_ALLOWED_EMAILS:?defina MCP_OAUTH_ALLOWED_EMAILS no .env}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-https://infovale.valemilk.com.br}
+      # Login do Rebaixa, alcançado pela rede do BI (o rebaixa-backend também está nela).
+      MCP_OAUTH_LOGIN_URL: ${MCP_OAUTH_LOGIN_URL:-http://rebaixa-backend:4000/api/auth/login}
+    volumes:
+      - mcp_oauth_data:/data
     # Sem porta publicada: quem fala com ele é o nginx do Rebaixa, pela rede dedicada mcp_net.
     expose:
       - "8001"
@@ -26,6 +34,9 @@ services:
       mcp_net:
         aliases:
           - bi-cometa-mcp     # nome que o nginx do Rebaixa usa
+
+volumes:
+  mcp_oauth_data:
 
 networks:
   bi_network:

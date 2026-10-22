@@ -13,6 +13,8 @@ Conexão: `MCP_DB_URL` (se existir) ou `DB_URL` do `.env` do projeto. O ideal é
 Transporte: stdio (padrão, o cliente MCP inicia o processo) ou HTTP com `MCP_TRANSPORT=http`
 (para rodar na VPS atrás do proxy). No modo HTTP toda requisição exige
 `Authorization: Bearer <token>`, com os tokens em `MCP_AUTH_TOKENS=nome:token,nome2:token2`.
+Com `MCP_PUBLIC_URL` definido, o servidor também faz OAuth (login pelo Rebaixa) para os conectores do
+Claude que só aceitam URL; ver oauth_provider.py.
 """
 import hmac
 import json
@@ -29,9 +31,12 @@ from typing import Any, Dict, List
 import psycopg
 import uvicorn
 from dotenv import load_dotenv
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
+
+from oauth_provider import LOGIN_PATH, build_oauth
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DICTIONARY_PATH = BASE_DIR / "docs" / "DATA_DICTIONARY.md"
@@ -49,8 +54,27 @@ logger = logging.getLogger("bi_cometa_mcp")
 
 load_dotenv(BASE_DIR / ".env")
 
-# Quem está chamando (preenchido pelo middleware no modo HTTP; "stdio" quando é o processo local).
+# Quem está chamando quando só há tokens fixos (preenchido pelo middleware; "stdio" no processo local).
 _current_user: ContextVar[str] = ContextVar("mcp_user", default="stdio")
+
+
+def _auth_tokens() -> Dict[str, str]:
+    """Lê `MCP_AUTH_TOKENS=nome:token,nome2:token2` e devolve {token: nome}."""
+    tokens: Dict[str, str] = {}
+    for item in filter(None, (p.strip() for p in os.getenv("MCP_AUTH_TOKENS", "").split(","))):
+        name, sep, token = item.partition(":")
+        # A mensagem não cita o item: se o formato estiver errado ele pode ser o próprio token.
+        if not sep or not name or len(token) < MIN_TOKEN_LEN:
+            raise RuntimeError(
+                f"MCP_AUTH_TOKENS inválido: use nome:token, com token de pelo menos {MIN_TOKEN_LEN} caracteres."
+            )
+        tokens[token] = name
+    return tokens
+
+
+HTTP_MODE = os.getenv("MCP_TRANSPORT", "stdio") == "http"
+# OAuth (login pelo Rebaixa) só no modo HTTP e só se MCP_PUBLIC_URL estiver definido.
+_oauth = build_oauth(_auth_tokens()) if HTTP_MODE else None
 
 mcp = FastMCP(
     "bi-cometa-postgres",
@@ -60,6 +84,8 @@ mcp = FastMCP(
     port=int(os.getenv("MCP_PORT", "8001")),
     stateless_http=True,
     json_response=True,
+    auth_server_provider=_oauth[0] if _oauth else None,
+    auth=_oauth[1] if _oauth else None,
     instructions=(
         "Banco PostgreSQL `bi_cometa` (ETL de Cometa/ValeMilk, Cometa/ValeFish, InfoMarket e ATIVMOB). "
         "Comece por `listar_tabelas` e `descrever_tabela`. Pontos que costumam enganar: "
@@ -72,6 +98,16 @@ mcp = FastMCP(
         "Só SELECT é aceito; filtre por período e use LIMIT/agregações em tabelas grandes."
     ),
 )
+
+
+if _oauth:
+    mcp.custom_route(LOGIN_PATH, methods=["GET", "POST"])(_oauth[0].handle_login)
+
+
+def _caller() -> str:
+    """Quem chamou: o dono do token OAuth/fixo, ou o nome do token fixo no modo sem OAuth."""
+    token = get_access_token()
+    return (token.subject or token.client_id) if token else _current_user.get()
 
 
 def _db_url() -> str:
@@ -217,7 +253,7 @@ def consultar_sql(sql: str, limite: int = DEFAULT_LIMIT) -> Dict[str, Any]:
         raise ValueError("Envie uma única instrução, sem ';' no meio.")
 
     limite = max(1, min(limite, MAX_LIMIT))
-    logger.info("consultar_sql usuario=%s sql=%s", _current_user.get(), statement[:LOG_SQL_CHARS])
+    logger.info("consultar_sql usuario=%s sql=%s", _caller(), statement[:LOG_SQL_CHARS])
     # Pede uma linha a mais para saber se o resultado foi truncado.
     wrapped = f"SELECT * FROM (\n{statement}\n) AS _q LIMIT {limite + 1}"
     with _connect() as conn:
@@ -242,22 +278,8 @@ async def healthz(request: Request) -> PlainTextResponse:
     return PlainTextResponse("ok")
 
 
-def _auth_tokens() -> Dict[str, str]:
-    """Lê `MCP_AUTH_TOKENS=nome:token,nome2:token2` e devolve {token: nome}."""
-    tokens: Dict[str, str] = {}
-    for item in filter(None, (p.strip() for p in os.getenv("MCP_AUTH_TOKENS", "").split(","))):
-        name, sep, token = item.partition(":")
-        # A mensagem não cita o item: se o formato estiver errado ele pode ser o próprio token.
-        if not sep or not name or len(token) < MIN_TOKEN_LEN:
-            raise RuntimeError(
-                f"MCP_AUTH_TOKENS inválido: use nome:token, com token de pelo menos {MIN_TOKEN_LEN} caracteres."
-            )
-        tokens[token] = name
-    return tokens
-
-
 class BearerAuthMiddleware:
-    """ASGI: exige `Authorization: Bearer <token>` (menos em /healthz) e guarda quem chamou."""
+    """ASGI (modo sem OAuth): exige `Authorization: Bearer <token>` (menos em /healthz) e guarda quem chamou."""
 
     def __init__(self, app: Any, tokens: Dict[str, str]) -> None:
         self.app = app
@@ -290,13 +312,17 @@ class BearerAuthMiddleware:
 
 
 def run_http() -> None:
-    """Sobe o MCP via HTTP (streamable, sem estado) com autenticação por token."""
-    tokens = _auth_tokens()
-    if not tokens:
-        raise SystemExit("MCP_AUTH_TOKENS vazio: o modo HTTP não sobe sem autenticação.")
+    """Sobe o MCP via HTTP (streamable, sem estado): OAuth + tokens fixos, ou só tokens fixos."""
     app = mcp.streamable_http_app()
-    app.add_middleware(BearerAuthMiddleware, tokens=tokens)
-    logger.info("MCP HTTP em %s:%s com %d token(s)", mcp.settings.host, mcp.settings.port, len(tokens))
+    if _oauth:
+        # A autenticação (OAuth e tokens fixos) fica por conta do FastMCP, via BiOAuthProvider.load_access_token.
+        logger.info("MCP HTTP em %s:%s com OAuth", mcp.settings.host, mcp.settings.port)
+    else:
+        tokens = _auth_tokens()
+        if not tokens:
+            raise SystemExit("MCP_AUTH_TOKENS vazio: o modo HTTP não sobe sem autenticação.")
+        app.add_middleware(BearerAuthMiddleware, tokens=tokens)
+        logger.info("MCP HTTP em %s:%s com %d token(s)", mcp.settings.host, mcp.settings.port, len(tokens))
     uvicorn.run(app, host=mcp.settings.host, port=mcp.settings.port)
 
 
