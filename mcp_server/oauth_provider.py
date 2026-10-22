@@ -1,10 +1,13 @@
 """OAuth 2.1 (authorization code + PKCE, registro dinâmico) do MCP, com login pelo Rebaixa.
 
 Fluxo: o conector do Claude (claude.ai / Desktop) descobre os endpoints, se registra em /register e manda
-o usuário para /authorize -> /mcp-login (e-mail e senha do Rebaixa) -> volta ao Claude com um código, que
+o usuário para /authorize -> /mcp-login (usuário e senha do Rebaixa) -> volta ao Claude com um código, que
 vira access token (1h) + refresh token (30 dias, com rotação).
 
-Só entra quem (1) está em MCP_OAUTH_ALLOWED_EMAILS, (2) autentica no Rebaixa e (3) tem um perfil de
+"Usuário" é o identificador do Rebaixa (o campo `email` do cadastro, texto livre). Como na tela de login do
+Rebaixa, a pessoa escolhe o NOME numa lista (só os autorizados) e digita a senha.
+
+Só entra quem (1) está em MCP_OAUTH_ALLOWED_USERS, (2) autentica no Rebaixa e (3) tem um perfil de
 MCP_OAUTH_ALLOWED_ROLES. Códigos e tokens são guardados só como hash SHA-256, em SQLite (volume do container).
 Os tokens fixos de MCP_AUTH_TOKENS continuam valendo (Claude Code, mcp-remote).
 """
@@ -46,6 +49,7 @@ ACCESS_TTL_S = 3600
 REFRESH_TTL_S = 30 * 24 * 3600
 CODE_TTL_S = 300
 PENDING_TTL_S = 600
+CHOICES_TTL_S = 300
 MAX_CLIENTS = 1_000
 LOGIN_TIMEOUT_S = 8
 # Callbacks do Claude (a Anthropic avisa que o domínio pode migrar de claude.ai para claude.com).
@@ -100,9 +104,9 @@ class Store:
 
 
 class AttemptLimiter:
-    """Falhas de login por e-mail, por IP e no total (janela deslizante, em memória)."""
+    """Falhas de login por usuário, por IP e no total (janela deslizante, em memória)."""
 
-    MAX_BY_EMAIL = 5
+    MAX_BY_USER = 5
     MAX_BY_IP = 10
     MAX_GLOBAL = 40
     WINDOW_S = 900
@@ -118,29 +122,30 @@ class AttemptLimiter:
             hits.popleft()
         return hits
 
-    def blocked(self, ip: str, email: str) -> bool:
+    def blocked(self, ip: str, usuario: str) -> bool:
         return (
-            len(self._recent(f"e:{email}")) >= self.MAX_BY_EMAIL
+            len(self._recent(f"u:{usuario}")) >= self.MAX_BY_USER
             or len(self._recent(f"i:{ip}")) >= self.MAX_BY_IP
             or len(self._recent("g")) >= self.MAX_GLOBAL
         )
 
-    def fail(self, ip: str, email: str) -> None:
+    def fail(self, ip: str, usuario: str) -> None:
         if len(self._hits) > self.MAX_KEYS:
             self._hits.clear()
         now = time.time()
-        for key in (f"e:{email}", f"i:{ip}", "g"):
+        for key in (f"u:{usuario}", f"i:{ip}", "g"):
             self._recent(key).append(now)
 
-    def clear(self, email: str) -> None:
-        self._hits.pop(f"e:{email}", None)
+    def clear(self, usuario: str) -> None:
+        self._hits.pop(f"u:{usuario}", None)
 
 
 @dataclass
 class OAuthConfig:
     public_url: str
     login_url: str
-    allowed_emails: Set[str]
+    users_url: Optional[str]  # lista pública de usuários do Rebaixa (para montar a lista de nomes)
+    allowed_users: Set[str]
     allowed_roles: Set[str]
     redirect_uris: Set[str]
     db_path: str
@@ -156,7 +161,7 @@ body{{font-family:system-ui,sans-serif;background:#f3f6fa;margin:0;display:flex;
 main{{background:#fff;max-width:380px;width:calc(100% - 32px);padding:28px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08)}}
 h1{{color:#0056A6;font-size:1.25rem;margin:0 0 8px}} p{{color:#334;font-size:.92rem;line-height:1.4}}
 label{{display:block;font-size:.85rem;margin:14px 0 4px;color:#334}}
-input{{width:100%;box-sizing:border-box;padding:10px;border:1px solid #b9c4d0;border-radius:8px;font-size:1rem}}
+input,select{{width:100%;box-sizing:border-box;padding:10px;border:1px solid #b9c4d0;border-radius:8px;font-size:1rem;background:#fff}}
 button{{width:100%;margin-top:20px;padding:11px;background:#0056A6;color:#fff;border:0;border-radius:8px;font-size:1rem;cursor:pointer}}
 .erro{{background:#fdecea;color:#8a1f17;padding:10px;border-radius:8px;font-size:.88rem;margin-top:12px}}
 .nota{{font-size:.78rem;color:#667;margin-top:16px}}
@@ -174,15 +179,24 @@ button{{width:100%;margin-top:20px;padding:11px;background:#0056A6;color:#fff;bo
     )
 
 
-def _form(req_id: str, client_name: str, erro: str = "") -> str:
+def _form(req_id: str, client_name: str, choices: List[Tuple[str, str]], erro: str = "") -> str:
     aviso = f'<div class="erro">{html.escape(erro)}</div>' if erro else ""
+    if choices:  # igual à tela de login do Rebaixa: escolhe o nome numa lista
+        options = "".join(f'<option value="{html.escape(u)}">{html.escape(n)}</option>' for u, n in choices)
+        campo = f'<label for="usuario">Usuário</label><select id="usuario" name="usuario" required autofocus>{options}</select>'
+    else:  # Rebaixa fora do ar ao montar a lista: cai para digitar o identificador
+        campo = (
+            '<label for="usuario">Usuário (o e-mail cadastrado no Rebaixa)</label>'
+            '<input id="usuario" name="usuario" type="text" required autofocus autocapitalize="none" '
+            'autocorrect="off" spellcheck="false" autocomplete="username">'
+        )
     return f"""<h1>Conectar o Claude ao BI_COMETA</h1>
 <p><b>{html.escape(client_name)}</b> pede acesso <b>somente leitura</b> ao banco de dados do BI
 (vendas, estoque, encartes). Entre com a sua conta do Rebaixa para autorizar.</p>
 {aviso}
 <form method="post" action="{LOGIN_PATH}" autocomplete="on">
 <input type="hidden" name="req" value="{html.escape(req_id)}">
-<label for="email">E-mail</label><input id="email" name="email" type="email" required autofocus autocomplete="username">
+{campo}
 <label for="senha">Senha</label><input id="senha" name="senha" type="password" required autocomplete="current-password">
 <button type="submit">Entrar e autorizar</button>
 </form>
@@ -201,6 +215,7 @@ class BiOAuthProvider:
         self.cfg = config
         self.store = Store(config.db_path)
         self.limiter = AttemptLimiter()
+        self._choices: Optional[Tuple[float, List[Tuple[str, str]]]] = None  # (quando, [(usuário, nome)])
 
     # --- registro de clientes (DCR) -------------------------------------------------------------
     async def get_client(self, client_id: str) -> Optional[OAuthClientInformationFull]:
@@ -244,72 +259,93 @@ class BiOAuthProvider:
             return None
         return json.loads(row[0])
 
+    async def _login_choices(self) -> List[Tuple[str, str]]:
+        """[(usuário, nome)] dos autorizados, pela lista pública do Rebaixa; [] se indisponível."""
+        if self._choices and time.time() - self._choices[0] < CHOICES_TTL_S:
+            return self._choices[1]
+        if not self.cfg.users_url:
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=LOGIN_TIMEOUT_S) as client:
+                response = await client.get(self.cfg.users_url)
+            response.raise_for_status()
+            users = response.json().get("users") or []
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return []
+        choices = sorted(
+            ((str(u["email"]).lower(), str(u.get("nome") or u["email"])) for u in users if str(u.get("email", "")).lower() in self.cfg.allowed_users),
+            key=lambda c: c[1].lower(),
+        )
+        self._choices = (time.time(), choices)
+        return choices
+
     async def handle_login(self, request: Request) -> Response:
-        """GET: mostra o formulário. POST: confere e-mail/senha no Rebaixa e devolve o código ao Claude."""
+        """GET: mostra o formulário. POST: confere usuário/senha no Rebaixa e devolve o código ao Claude."""
         if request.method == "GET":
             req_id = request.query_params.get("req", "")
             pending = self._pending(req_id)
             if not pending:
                 return _page("<h1>Link expirado</h1><p>Volte ao Claude e inicie a conexão de novo.</p>", 400)
-            return _page(_form(req_id, pending["client_name"]))
+            return _page(_form(req_id, pending["client_name"], await self._login_choices()))
 
         form = await request.form()
         req_id = str(form.get("req", ""))
-        email = str(form.get("email", "")).strip().lower()
+        usuario = str(form.get("usuario", "")).strip().lower()  # o Rebaixa também grava/compara em minúsculas
         senha = str(form.get("senha", ""))
         pending = self._pending(req_id)
         if not pending:
             return _page("<h1>Link expirado</h1><p>Volte ao Claude e inicie a conexão de novo.</p>", 400)
 
         ip = _client_ip(request)
-        if self.limiter.blocked(ip, email):
-            logger.warning("login bloqueado por excesso de tentativas email=%s ip=%s", email, ip)
-            return _page(_form(req_id, pending["client_name"], "Muitas tentativas. Aguarde 15 minutos."), 429)
+        choices = await self._login_choices()
+        if self.limiter.blocked(ip, usuario):
+            logger.warning("login bloqueado por excesso de tentativas usuario=%s ip=%s", usuario, ip)
+            return _page(_form(req_id, pending["client_name"], choices, "Muitas tentativas. Aguarde 15 minutos."), 429)
 
-        generic = "E-mail ou senha inválidos, ou sem permissão para este conector."
-        if email not in self.cfg.allowed_emails:
-            self.limiter.fail(ip, email)
-            logger.warning("login recusado (e-mail fora da lista) email=%s ip=%s", email, ip)
-            return _page(_form(req_id, pending["client_name"], generic), 401)
+        generic = "Usuário ou senha inválidos, ou sem permissão para este conector."
+        if usuario not in self.cfg.allowed_users:
+            self.limiter.fail(ip, usuario)
+            logger.warning("login recusado (usuário fora da lista) usuario=%s ip=%s", usuario, ip)
+            return _page(_form(req_id, pending["client_name"], choices, generic), 401)
 
         try:
-            user = await self._rebaixa_login(email, senha)
+            user = await self._rebaixa_login(usuario, senha)
         except httpx.HTTPError as exc:
             logger.error("login: Rebaixa indisponível (%s)", type(exc).__name__)
-            return _page(_form(req_id, pending["client_name"], "Não foi possível validar agora. Tente de novo."), 503)
+            return _page(_form(req_id, pending["client_name"], choices, "Não foi possível validar agora. Tente de novo."), 503)
         if user is None:
-            self.limiter.fail(ip, email)
-            logger.warning("login recusado (credenciais/perfil) email=%s ip=%s", email, ip)
-            return _page(_form(req_id, pending["client_name"], generic), 401)
+            self.limiter.fail(ip, usuario)
+            logger.warning("login recusado (credenciais/perfil) usuario=%s ip=%s", usuario, ip)
+            return _page(_form(req_id, pending["client_name"], choices, generic), 401)
 
-        self.limiter.clear(email)
+        self.limiter.clear(usuario)
         code = secrets.token_urlsafe(32)
         self.store.run(
             "INSERT INTO codes (hash, data, expires_at) VALUES (?, ?, ?)",
             (
                 _hash(code),
-                json.dumps({**{k: pending[k] for k in ("client_id", "code_challenge", "redirect_uri", "explicit", "resource")}, "subject": email}),
+                json.dumps({**{k: pending[k] for k in ("client_id", "code_challenge", "redirect_uri", "explicit", "resource")}, "subject": usuario}),
                 int(time.time()) + CODE_TTL_S,
             ),
         )
         self.store.run("DELETE FROM pending WHERE id = ?", (req_id,))
-        logger.info("login ok usuario=%s ip=%s cliente=%s", email, ip, pending["client_name"])
+        logger.info("login ok usuario=%s ip=%s cliente=%s", usuario, ip, pending["client_name"])
         return RedirectResponse(
             construct_redirect_uri(pending["redirect_uri"], code=code, state=pending["state"]),
             status_code=302,
             headers={"Cache-Control": "no-store"},
         )
 
-    async def _rebaixa_login(self, email: str, senha: str) -> Optional[Dict[str, Any]]:
+    async def _rebaixa_login(self, usuario: str, senha: str) -> Optional[Dict[str, Any]]:
         """Usuário do Rebaixa se e-mail/senha batem e o perfil é permitido; None caso contrário."""
         async with httpx.AsyncClient(timeout=LOGIN_TIMEOUT_S) as client:
-            response = await client.post(self.cfg.login_url, json={"email": email, "senha": senha})
+            response = await client.post(self.cfg.login_url, json={"email": usuario, "senha": senha})  # o Rebaixa chama o identificador de "email"
         if response.status_code in (400, 401, 403):
             return None
         response.raise_for_status()
         user = response.json().get("user") or {}
         roles = {str(r).lower() for r in [user.get("role"), *(user.get("roles") or [])] if r}
-        if str(user.get("email", "")).lower() != email or not roles & self.cfg.allowed_roles:
+        if str(user.get("email", "")).lower() != usuario or not roles & self.cfg.allowed_roles:
             return None
         return user
 
@@ -344,7 +380,7 @@ class BiOAuthProvider:
         return self._issue(client.client_id, authorization_code.subject or "")
 
     def _allowed(self, subject: str) -> bool:
-        return subject.lower() in self.cfg.allowed_emails
+        return subject.lower() in self.cfg.allowed_users
 
     def _issue(self, client_id: str, subject: str) -> OAuthToken:
         family = secrets.token_hex(8)
@@ -399,13 +435,16 @@ def build_oauth(static_tokens: Dict[str, str]) -> Optional[Tuple[BiOAuthProvider
     public_url = os.getenv("MCP_PUBLIC_URL", "").strip().rstrip("/")
     if not public_url:
         return None
-    emails = _csv("MCP_OAUTH_ALLOWED_EMAILS")
-    if not emails:
-        raise RuntimeError("MCP_OAUTH_ALLOWED_EMAILS vazio: o OAuth não sobe sem uma lista de e-mails autorizados.")
+    users = _csv("MCP_OAUTH_ALLOWED_USERS")
+    if not users:
+        raise RuntimeError("MCP_OAUTH_ALLOWED_USERS vazio: o OAuth não sobe sem uma lista de usuários autorizados.")
+    login_url = os.getenv("MCP_OAUTH_LOGIN_URL", "http://rebaixa-backend:4000/api/auth/login")
     config = OAuthConfig(
         public_url=public_url,
-        login_url=os.getenv("MCP_OAUTH_LOGIN_URL", "http://rebaixa-backend:4000/api/auth/login"),
-        allowed_emails=emails,
+        login_url=login_url,
+        # .../api/auth/login -> .../api/auth/usuarios (lista pública de nomes usada na tela de login do Rebaixa)
+        users_url=login_url[: -len("/login")] + "/usuarios" if login_url.endswith("/login") else None,
+        allowed_users=users,
         allowed_roles=_csv("MCP_OAUTH_ALLOWED_ROLES", "admin"),
         redirect_uris={str(AnyUrl(u)) for u in os.getenv("MCP_OAUTH_REDIRECT_URIS", DEFAULT_REDIRECT_URIS).split(",") if u.strip()},
         db_path=os.getenv("MCP_OAUTH_DB", "/data/oauth.db"),
@@ -418,5 +457,5 @@ def build_oauth(static_tokens: Dict[str, str]) -> Optional[Tuple[BiOAuthProvider
         client_registration_options=ClientRegistrationOptions(enabled=True),
         revocation_options=RevocationOptions(enabled=True),
     )
-    logger.info("OAuth ativo: issuer=%s, %d e-mail(s) autorizado(s), perfis=%s", public_url, len(emails), sorted(config.allowed_roles))
+    logger.info("OAuth ativo: issuer=%s, %d usuário(s) autorizado(s), perfis=%s", public_url, len(users), sorted(config.allowed_roles))
     return BiOAuthProvider(config), settings

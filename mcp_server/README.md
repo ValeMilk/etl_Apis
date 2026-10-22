@@ -96,29 +96,31 @@ subir sem tokens (ou com token de menos de 24 caracteres).
 
 A tela **Settings → Connectors → Add custom connector** do Claude só pede nome e URL, então o token fixo não
 serve. Com `MCP_PUBLIC_URL` definido (o compose já usa `https://infovale.valemilk.com.br`), o MCP também é um
-servidor OAuth 2.1 (código + PKCE, registro dinâmico): ao conectar, o Claude abre `/mcp-login`, a pessoa entra
-com e-mail e senha do **Rebaixa** e autoriza. O Claude Code e o `mcp-remote` seguem com o token fixo.
+servidor OAuth 2.1 (código + PKCE, registro dinâmico): ao conectar, o Claude abre `/mcp-login`, a pessoa escolhe
+o **nome** numa lista (igual à tela de login do Rebaixa; só aparecem os autorizados), digita a senha do
+**Rebaixa** e autoriza. O Claude Code e o `mcp-remote` seguem com o token fixo.
 
 Variáveis (no `.env` da raiz do BI_COMETA, na VPS):
 
 | Variável | Para quê |
 |---|---|
-| `MCP_OAUTH_ALLOWED_EMAILS` | **Obrigatória.** E-mails (separados por vírgula) que podem entrar. Tirar um e-mail daqui e recriar o container corta o acesso dele na hora, inclusive tokens já emitidos. |
+| `MCP_OAUTH_ALLOWED_USERS` | **Obrigatória.** Usuários do Rebaixa (separados por vírgula) que podem entrar, escritos como o campo `Email` do cadastro (tela Admin → Usuários), que é o valor que o Rebaixa usa para identificar a pessoa mesmo quando ela só enxerga o nome na lista de login. Tirar um usuário daqui e recriar o container corta o acesso dele na hora, inclusive tokens já emitidos. |
 | `MCP_OAUTH_ALLOWED_ROLES` | Perfis do Rebaixa aceitos (padrão `admin`). |
 | `MCP_PUBLIC_URL` | URL pública, usada como emissor OAuth (padrão no compose: `https://infovale.valemilk.com.br`). |
 | `MCP_OAUTH_LOGIN_URL` | Login do Rebaixa (padrão `http://rebaixa-backend:4000/api/auth/login`, pela rede do BI). |
 | `MCP_OAUTH_REDIRECT_URIS` | Callbacks aceitos no registro (padrão: os do `claude.ai` e `claude.com`). |
 
 Como funciona e o que protege:
-- Só passa quem está na lista de e-mails, autentica no Rebaixa **e** tem perfil permitido. A senha só é
-  repassada ao Rebaixa; nunca é gravada nem logada.
+- Só passa quem está na lista de usuários, autentica no Rebaixa **e** tem perfil permitido. A senha só é
+  repassada ao Rebaixa; nunca é gravada nem logada. Se a lista de nomes do Rebaixa estiver fora do ar, a tela
+  pede para digitar o usuário.
 - Códigos e tokens são opacos, guardados só como hash no SQLite (`/data/oauth.db`, volume
   `mcp_oauth_data`, então sobrevivem a deploys). Access token dura 1h; refresh dura 30 dias e é rotacionado.
 - O registro dinâmico só aceita os callbacks do Claude; qualquer outro `redirect_uri` é recusado.
-- Limite de tentativas de login: 5 falhas por e-mail, 10 por IP e 40 no total, em 15 minutos.
-- O log mostra o e-mail em cada login e em cada `consultar_sql` (`usuario=...`).
+- Limite de tentativas de login: 5 falhas por usuário, 10 por IP e 40 no total, em 15 minutos.
+- O log mostra o usuário em cada login e em cada `consultar_sql` (`usuario=...`).
 - Limitação do SDK: a rota `/revoke` exige o campo `client_secret` (mesmo vazio); para cortar alguém, use a
-  lista de e-mails acima.
+  lista de usuários acima.
 
 No Claude: **Settings → Connectors → Add custom connector**, nome `BI Cometa`, URL
 `https://infovale.valemilk.com.br/mcp`, **Add** → **Connect** → entre com o e-mail e a senha do Rebaixa.

@@ -8,7 +8,8 @@
 # Variáveis lidas do .env (a raiz do BI_COMETA), só estas duas entram no container:
 #   MCP_DB_URL=postgresql://bi_mcp:<senha>@bi_cometa_db:5432/bi_cometa
 #   MCP_AUTH_TOKENS=nome:<token>,outro:<token>     # token com 24+ caracteres, ex.: openssl rand -hex 32
-#   MCP_OAUTH_ALLOWED_EMAILS=fulano@empresa.com    # login OAuth (conector do Claude): quem pode entrar, via Rebaixa
+#   MCP_OAUTH_ALLOWED_USERS=<usuario do Rebaixa>   # login OAuth (conector do Claude): quem pode entrar, via Rebaixa
+#                                                  # (é o campo "Email" da tela Admin > Usuários; vírgula separa vários)
 # Opcionais: MCP_PUBLIC_URL (padrão https://infovale.valemilk.com.br), MCP_OAUTH_LOGIN_URL, MCP_OAUTH_ALLOWED_ROLES.
 services:
   mcp:
@@ -20,7 +21,7 @@ services:
     environment:
       MCP_DB_URL: ${MCP_DB_URL:?defina MCP_DB_URL no .env}
       MCP_AUTH_TOKENS: ${MCP_AUTH_TOKENS:?defina MCP_AUTH_TOKENS no .env}
-      MCP_OAUTH_ALLOWED_EMAILS: ${MCP_OAUTH_ALLOWED_EMAILS:?defina MCP_OAUTH_ALLOWED_EMAILS no .env}
+      MCP_OAUTH_ALLOWED_USERS: ${MCP_OAUTH_ALLOWED_USERS:?defina MCP_OAUTH_ALLOWED_USERS no .env}
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-https://infovale.valemilk.com.br}
       # Login do Rebaixa, alcançado pela rede do BI (o rebaixa-backend também está nela).
       MCP_OAUTH_LOGIN_URL: ${MCP_OAUTH_LOGIN_URL:-http://rebaixa-backend:4000/api/auth/login}
