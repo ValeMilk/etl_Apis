@@ -125,9 +125,13 @@ Efeito medido (marca MARANGUAPE, encartes vigentes nos 3 meses até 22/10/2026):
 
 Como consultar:
 
-- `brand_name` e `network_name` são texto em MAIÚSCULAS (ex.: `MARANGUAPE`, `SUPERMERCADO GUARA`). O usuário
-  escreve "Guará"; busque com `ILIKE '%guara%'` e confira antes com
-  `SELECT DISTINCT network_name FROM infomarket_tratado WHERE network_name ILIKE '%guara%'`.
+- `brand_name` e `network_name` são texto em MAIÚSCULAS (ex.: `MARANGUAPE`, `SUPERMERCADO GUARA`), e 18 redes
+  têm acento no nome (ex.: `ATACADÃO`). O `ILIKE` **não ignora acento** (medido em 22/10/2026: `ILIKE '%atacadao%'`
+  acha 0 linhas, `'%atacadão%'` acha 951) e a extensão `unaccent` não está instalada. O usuário escreve sem acento
+  ou com acento diferente do cadastro, então compare sem acento nos dois lados, com o termo já em MAIÚSCULAS:
+  `translate(upper(network_name), 'ÃÁÀÂÉÊÍÓÔÕÚÇ', 'AAAAEEIOOOUC') LIKE '%ATACADAO%'`. Vale igual para `brand_name`.
+  Antes de montar o relatório, confira qual nome existe:
+  `SELECT DISTINCT network_name FROM infomarket_tratado WHERE <filtro acima>`.
 - "Encartes de um período" = encartes **vigentes** nele:
   `validity_finish_date >= <início> AND validity_start_date <= <fim>`.
 - `leaflet_name` identifica o encarte; uma rede pode ter vários no mesmo período. `value` é o preço
