@@ -1,0 +1,37 @@
+# MCP do PostgreSQL (somente leitura), separado do docker-compose.yml principal de propósito:
+# o CI faz `docker-compose up -d --build` do arquivo principal a cada push na main, e uma falha
+# de build aqui não pode impedir o deploy da API/ETL.
+#
+# Subir (na raiz do BI_COMETA, na VPS):
+#   docker-compose -f docker/docker-compose.mcp.yml --env-file .env up -d --build
+#
+# Variáveis lidas do .env (a raiz do BI_COMETA), só estas duas entram no container:
+#   MCP_DB_URL=postgresql://bi_mcp:<senha>@bi_cometa_db:5432/bi_cometa
+#   MCP_AUTH_TOKENS=nome:<token>,outro:<token>     # token com 24+ caracteres, ex.: openssl rand -hex 32
+services:
+  mcp:
+    build:
+      context: ..
+      dockerfile: mcp_server/Dockerfile
+    container_name: bi_cometa_mcp
+    restart: unless-stopped
+    environment:
+      MCP_DB_URL: ${MCP_DB_URL:?defina MCP_DB_URL no .env}
+      MCP_AUTH_TOKENS: ${MCP_AUTH_TOKENS:?defina MCP_AUTH_TOKENS no .env}
+    # Sem porta publicada: quem fala com ele é o nginx do Rebaixa, pela rede dedicada mcp_net.
+    expose:
+      - "8001"
+    networks:
+      bi_network: {}          # alcança o Postgres (bi_cometa_db:5432)
+      mcp_net:
+        aliases:
+          - bi-cometa-mcp     # nome que o nginx do Rebaixa usa
+
+networks:
+  bi_network:
+    external: true
+    name: docker_bi_network
+  # Só o MCP e o nginx do Rebaixa. Criar uma vez na VPS: docker network create bi_cometa_mcp_net
+  mcp_net:
+    external: true
+    name: bi_cometa_mcp_net
